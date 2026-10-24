@@ -394,8 +394,8 @@ func (c *crawlerImpl) Stop() error {
 // owns its own registry URL -- there is no per-call registry URL to select a
 // different endpoint. It launches one background poll and returns a run ID
 // immediately; the poll's outcome is only observable via logs/the queue and
-// its on_demand_crawl span/metrics (see instrumentation.go), the same as a
-// scheduled tick. The poll runs under the Scheduler's own
+// its on_demand_crawl span and metrics, the same as a scheduled tick. The poll
+// runs under the Scheduler's own
 // lifecycle (via Scheduler.RunOnce), not the caller's context, so it
 // survives a request-scoped caller returning and is still waited-for (not
 // orphaned) by Stop.
@@ -419,9 +419,8 @@ func (c *crawlerImpl) CrawlRegistry(ctx context.Context, networkIDs []string) (s
 	adhoc.Source = &registryDiscoverer{lookup: c.metadataLookup, networkIDs: networkIDs, log: c.log}
 
 	runID := uuid.NewString()
-	// The run outlives the triggering request, so its span is a new root
-	// (its own trace) rather than a child of the request's span -- linked
-	// back to that request's span instead, when there is one.
+	// The run outlives the request, so it gets its own trace, linked to the
+	// request's span when there is one.
 	spanOpts := []trace.SpanStartOption{
 		trace.WithNewRoot(),
 		trace.WithAttributes(attrRunID.String(runID), attrNetworkIDs.StringSlice(networkIDs)),

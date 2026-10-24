@@ -248,7 +248,7 @@ At `SIGINT`/`SIGTERM`, the adapter calls the `otelsetup` closer, which flushes a
 | `onix_plugin_errors_total` | Counter | `{error}` | Per-plugin call failures |
 | `onix_plugin_info` | Observable Gauge | `{plugin}` | Loaded plugin inventory; value is always 1 |
 
-**Histogram buckets (`onix_plugin_execution_duration_seconds`):** 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300 s (the upper range covers long-running background operations such as catalog crawler poll ticks and syncs)
+**Histogram buckets (`onix_plugin_execution_duration_seconds`):** 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300 s (the upper range covers long-running background work such as catalog crawler ticks)
 
 **Labels on `onix_plugin_execution_duration_seconds` and `onix_plugin_errors_total`:**
 
@@ -261,7 +261,7 @@ At `SIGINT`/`SIGTERM`, the adapter calls the `otelsetup` closer, which flushes a
 | `status` | Operation outcome (e.g. `success`, `error`, `partial_failure`) |
 | `error_type` | Low-cardinality failure class (`onix_plugin_errors_total` only) |
 
-**Catalog crawler (`plugin_id="catalogcrawler"`, `plugin_type="crawler"`)** records these per background operation — `poll_tick`, `registry_lookup`, `sync_next`, `park_sweep`, `on_demand_crawl` — with `operation`/`status`/`error_type` labels. A poll tick where some networks or discovery sources failed but the tick carried on is recorded with `status="partial_failure"`, `error_type="partial_discovery"`. See the [catalogcrawler README](../catalogcrawler/README.md#observability) for the full value list.
+The catalog crawler (`plugin_id="catalogcrawler"`, `plugin_type="crawler"`) records these for each background operation (`poll_tick`, `registry_lookup`, `sync_next`, `park_sweep`, `on_demand_crawl`). See the [catalogcrawler README](../catalogcrawler/README.md#observability) for label values.
 
 **Labels on `onix_plugin_info`:**
 
@@ -380,7 +380,7 @@ Each step executes as a child span of the request span. Step metrics (`onix_step
 
 ### Catalog crawler spans
 
-The `catalogcrawler` plugin runs in the background, outside any request, so each scheduler tick starts its **own root span** (one trace per tick):
+The `catalogcrawler` plugin runs outside any request, so each scheduler tick is its own trace:
 
 ```
 [catalogcrawler.poll_tick]                 every indexIntervalSeconds
@@ -392,7 +392,7 @@ The `catalogcrawler` plugin runs in the background, outside any request, so each
   └── [catalogcrawler.registry_lookup]
 ```
 
-Failed operations set span status `Error` and record the error. See the [catalogcrawler README](../catalogcrawler/README.md#observability) for attributes.
+See the [catalogcrawler README](../catalogcrawler/README.md#observability) for attributes.
 
 ### Trace context propagation
 

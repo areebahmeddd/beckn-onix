@@ -1,18 +1,5 @@
 package catalogcrawler
 
-// instrumentation.go — OpenTelemetry spans and plugin metrics for the
-// crawler's own operations (registry lookups, poll/sync/park-sweep ticks,
-// queue syncs, on-demand crawls). Purely additive to the slog logging these
-// paths already do: every operation still logs exactly what it did before,
-// it now also emits a span and records onix_plugin_execution_duration_seconds
-// / onix_plugin_errors_total (pkg/telemetry) so crawler failures reach
-// OTel-based dashboards and alerts, not only log aggregation.
-//
-// Everything here goes through the global otel TracerProvider/MeterProvider,
-// like every other plugin (cache, registry, dediregistry, simplekeymanager):
-// when telemetry isn't configured those are no-ops, so this costs next to
-// nothing and never fails an operation.
-
 import (
 	"context"
 	"errors"
@@ -28,44 +15,35 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Metric identity labels (telemetry.AttrPluginID / AttrPluginType).
-// pluginType matches the top-level `plugins.crawler` config slot, in the same
-// snake_case style core/module/handler's PluginEntries uses for module slots.
+// Metric identity labels; pluginType matches the plugins.crawler config slot.
 const (
 	pluginID   = "catalogcrawler"
 	pluginType = "crawler"
 )
 
-// Operation names: the telemetry.AttrOperation metric label, and (prefixed
-// with spanNamePrefix) the span name.
+// Operation names, used as the operation metric label and, with
+// spanNamePrefix, as the span name.
 const (
-	opPollTick       = "poll_tick"       // one scheduled Params.PollIndexes pass
-	opSyncTick       = "sync_tick"       // one scheduled queue drain (span only -- its sync_next children carry the metrics)
-	opSyncNext       = "sync_next"       // one Params.SyncNext call: claim the next queued item and settle it
-	opParkSweep      = "park_sweep"      // one scheduled Params.RequeueOrAbandonParked pass
-	opRegistryLookup = "registry_lookup" // one RegistryMetadataLookup.QueryByNetwork call for one network
-	opOnDemandCrawl  = "on_demand_crawl" // one CrawlRegistry-triggered PollIndexes pass
+	opPollTick       = "poll_tick"
+	opSyncTick       = "sync_tick" // span only; its sync_next children carry the metrics
+	opSyncNext       = "sync_next"
+	opParkSweep      = "park_sweep"
+	opRegistryLookup = "registry_lookup"
+	opOnDemandCrawl  = "on_demand_crawl"
 )
 
 const spanNamePrefix = "catalogcrawler."
 
-// Outcome values for the telemetry.AttrStatus label.
+// Values for the status label.
 const (
-	statusSuccess = "success"
-	statusError   = "error"
-	// statusPartialFailure: the operation completed, but some of its
-	// discovery inputs (registry networks or discovery sources) failed and
-	// were skipped -- see registryDiscoverer.Discover / multiSource.Discover.
-	statusPartialFailure = "partial_failure"
-	// statusEmpty: a SyncNext call found nothing to claim (the normal end of
-	// every queue drain), not a failure.
-	statusEmpty = "empty"
+	statusSuccess        = "success"
+	statusError          = "error"
+	statusPartialFailure = "partial_failure" // some networks or sources failed and were skipped
+	statusEmpty          = "empty"           // nothing to claim: the normal end of a drain
 )
 
-// Values for the telemetry.AttrErrorType label. Deliberately a small fixed
-// vocabulary (plus catalog-core's own bounded crawler.FaultClass values for a
-// claimed item's sync failure) so the label stays low-cardinality -- error
-// messages, network IDs and URLs only ever go on spans, never on metrics.
+// Values for the error_type label. Kept to a fixed set (plus crawler.FaultClass)
+// so the label stays low-cardinality; error details go on spans only.
 const (
 	errTypeLookupFailed     = "lookup_failed"
 	errTypePollFailed       = "poll_failed"
@@ -76,7 +54,7 @@ const (
 	errTypeTimeout          = "timeout"
 )
 
-// Span-only attribute keys (too high-cardinality for metric labels).
+// Span-only attribute keys, too high-cardinality for metric labels.
 const (
 	attrNetworkID      = attribute.Key("network_id")
 	attrNetworkIDs     = attribute.Key("network_ids")
@@ -90,26 +68,20 @@ func tracer() trace.Tracer {
 	return otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
 }
 
-// operation is one instrumented unit of work: a span plus the start time its
-// onix_plugin_execution_duration_seconds sample is measured from.
+// operation is one instrumented unit of work: its span and start time.
 type operation struct {
 	name  string
 	span  trace.Span
 	start time.Time
 }
 
-// startOperation starts op's span (named spanNamePrefix+op) as a child of
-// whatever span ctx carries, unless opts say otherwise (e.g.
-// trace.WithNewRoot for a scheduler tick).
 func startOperation(ctx context.Context, op string, opts ...trace.SpanStartOption) (context.Context, *operation) {
 	ctx, span := tracer().Start(ctx, spanNamePrefix+op, opts...)
 	return ctx, &operation{name: op, span: span, start: time.Now()}
 }
 
-// end records the operation's outcome on its span and in the plugin metrics,
-// then ends the span. errType is empty for an outcome that isn't a failure
-// (success/empty); any non-empty errType also increments
-// onix_plugin_errors_total. err, if non-nil, is recorded on the span.
+// end records the outcome on the span and in the plugin metrics, then ends the
+// span. A non-empty errType also counts towards onix_plugin_errors_total.
 func (o *operation) end(ctx context.Context, status, errType string, err error) {
 	defer o.span.End()
 	o.span.SetAttributes(telemetry.AttrStatus.String(status))
@@ -129,11 +101,8 @@ func (o *operation) end(ctx context.Context, status, errType string, err error) 
 	recordOperation(ctx, o.name, status, errType, time.Since(o.start))
 }
 
-// endPoll settles a PollIndexes-driven operation (poll_tick, on_demand_crawl):
-// a returned error is a failure; no error but a partial discovery failure
-// flagged during the pass (see markPartialFailure) is a partial failure,
-// still counted in onix_plugin_errors_total since the tick only carried on
-// with whatever the healthy networks/sources returned.
+// endPoll ends a PollIndexes-driven operation. A partial discovery failure is
+// still counted as an error, since the pass only used the healthy inputs.
 func (o *operation) endPoll(ctx context.Context, err error, partial bool) {
 	switch {
 	case err != nil:
@@ -145,15 +114,11 @@ func (o *operation) endPoll(ctx context.Context, err error, partial bool) {
 	}
 }
 
-// recordOperation records one completed operation: its duration (every
-// outcome, labelled with its status so failure latencies can be told apart
-// from successful ones) and, for a failure outcome, one error. Metrics are
-// looked up per call, like the rest of pkg/telemetry's consumers, so they
-// bind to whatever MeterProvider otelsetup registered; when GetMetrics
-// fails, nothing is recorded -- telemetry must never fail the crawl itself.
+// recordOperation fetches the metrics per call so they bind to whichever
+// MeterProvider otelsetup registered. Telemetry errors never fail the crawl.
 func recordOperation(ctx context.Context, op, status, errType string, d time.Duration) {
 	m, err := telemetry.GetMetrics(ctx)
-	if err != nil || m == nil {
+	if err != nil {
 		return
 	}
 	attrs := []attribute.KeyValue{
@@ -164,16 +129,12 @@ func recordOperation(ctx context.Context, op, status, errType string, d time.Dur
 	}
 	m.PluginExecutionDuration.Record(ctx, d.Seconds(), metric.WithAttributes(attrs...))
 	if errType != "" {
-		errAttrs := make([]attribute.KeyValue, 0, len(attrs)+1)
-		errAttrs = append(errAttrs, attrs...)
-		errAttrs = append(errAttrs, telemetry.AttrErrorType.String(errType))
-		m.PluginErrorsTotal.Add(ctx, 1, metric.WithAttributes(errAttrs...))
+		m.PluginErrorsTotal.Add(ctx, 1, metric.WithAttributes(append(attrs, telemetry.AttrErrorType.String(errType))...))
 	}
 }
 
-// classifyError maps err onto the error_type label: context cancellation and
-// deadline expiry get their own values (a shutdown-time cancel shouldn't
-// look like a registry/store outage), anything else gets fallback.
+// classifyError gives cancellation and deadline expiry their own error_type,
+// so a shutdown does not look like a registry or store outage.
 func classifyError(err error, fallback string) string {
 	switch {
 	case errors.Is(err, context.Canceled):
@@ -185,34 +146,27 @@ func classifyError(err error, fallback string) string {
 	}
 }
 
-// syncErrorType classifies a claimed queue item's sync failure by
-// catalog-core's own bounded fault taxonomy (crawler.ClassifyFault: e.g.
-// "signature", "digest_mismatch", "transient") -- the same
-// permanent-vs-transient split SyncNext uses to decide park vs reschedule.
+// syncErrorType classifies a claimed item's sync failure by catalog-core's
+// fault class, the same split SyncNext uses to park or reschedule it.
 func syncErrorType(err error) string {
 	if t := classifyError(err, ""); t != "" {
 		return t
 	}
-	return string(crawler.ClassifyFault(0, err))
+	return string(crawler.ClassifyFault(0, err)) // no HTTP status at this layer
 }
 
-// partialFailureKey carries a per-pass *atomic.Bool through ctx so the
-// discovery layers called from inside crawlmanager.Params.PollIndexes
-// (registryDiscoverer, multiSource) can flag a tolerated partial failure
-// back to the poll_tick/on_demand_crawl operation that owns the pass --
-// PollIndexes itself only ever reports all-or-nothing.
+// partialFailureKey carries a per-pass flag so the discovery layers inside
+// PollIndexes can report a tolerated partial failure; PollIndexes itself only
+// reports all-or-nothing.
 type partialFailureKey struct{}
 
-// withPartialFailureTracking returns a ctx that markPartialFailure can flag,
-// and the flag to read once the pass is done.
 func withPartialFailureTracking(ctx context.Context) (context.Context, *atomic.Bool) {
 	flag := &atomic.Bool{}
 	return context.WithValue(ctx, partialFailureKey{}, flag), flag
 }
 
-// markPartialFailure flags the enclosing pass (if ctx is tracking one) as
-// partially failed, and adds an event to ctx's current span so the trace
-// shows where. failed/total describe what failed, e.g. 1 of 3 networks.
+// markPartialFailure flags the enclosing pass, if ctx tracks one, and adds an
+// event to the current span.
 func markPartialFailure(ctx context.Context, what string, failed, total int) {
 	if flag, ok := ctx.Value(partialFailureKey{}).(*atomic.Bool); ok {
 		flag.Store(true)

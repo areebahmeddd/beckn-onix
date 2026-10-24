@@ -1,10 +1,5 @@
 package catalogcrawler
 
-// instrumentation_test.go — asserts the spans and onix_plugin_* metric data
-// points the crawler's operations emit (instrumentation.go), for success,
-// partial-failure and failure paths, against an in-memory span recorder and
-// a manual metric reader installed as the global otel providers.
-
 import (
 	"context"
 	"errors"
@@ -34,10 +29,8 @@ const (
 )
 
 // setupTelemetry installs a span recorder and a manual metric reader as the
-// global otel providers for the duration of the test, restoring the
-// previous ones afterwards. The providers are process-global, so a test using
-// this must not call t.Parallel, and must stop any Scheduler it starts before
-// returning (a still-running tick would record into the next test's providers).
+// global otel providers for the test. They are process-global, so callers must
+// not use t.Parallel and must stop any Scheduler they start before returning.
 func setupTelemetry(t *testing.T) (*tracetest.SpanRecorder, *sdkmetric.ManualReader) {
 	t.Helper()
 	prevTP, prevMP := otel.GetTracerProvider(), otel.GetMeterProvider()
@@ -228,11 +221,6 @@ func TestSyncErrorType(t *testing.T) {
 	}
 }
 
-// TestRegistryDiscoverer_EmitsLookupSpansAndMetrics checks each per-network
-// QueryByNetwork call gets its own registry_lookup span (network_id on the
-// span only, never on the metric) and that the failing network's lookup is
-// counted in onix_plugin_errors_total while the healthy one's duration is
-// recorded as a success.
 func TestRegistryDiscoverer_EmitsLookupSpansAndMetrics(t *testing.T) {
 	sr, reader := setupTelemetry(t)
 	lookup := fakeMetadataLookup{
@@ -285,7 +273,6 @@ func TestRegistryDiscoverer_EmitsLookupSpansAndMetrics(t *testing.T) {
 	if got := durationCount(t, reader, opLabels(opRegistryLookup, statusError, "")); got != 1 {
 		t.Errorf("registry_lookup error durations = %d, want 1", got)
 	}
-	// network_id must never become a metric label.
 	for _, m := range collectMetrics(t, reader) {
 		if hist, isHist := m.Data.(metricdata.Histogram[float64]); isHist {
 			for _, dp := range hist.DataPoints {
@@ -297,9 +284,6 @@ func TestRegistryDiscoverer_EmitsLookupSpansAndMetrics(t *testing.T) {
 	}
 }
 
-// TestPollTick_RecordsOutcome covers poll_tick's three outcomes, including the
-// #924 headline case: some networks/sources failing while the tick carries
-// on (partial_failure) is counted, not only an outright failure.
 func TestPollTick_RecordsOutcome(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -340,8 +324,6 @@ func TestPollTick_RecordsOutcome(t *testing.T) {
 			sr, reader := setupTelemetry(t)
 			s := NewScheduler(crawlmanager.Params{Source: tt.source, Store: &fakeStore{}}, SchedulerConfig{}, nil)
 
-			// A span already on the caller's ctx must not become the tick's
-			// parent: each tick is its own root.
 			parentCtx, parent := otel.Tracer("test").Start(context.Background(), "outer")
 			s.pollTick(parentCtx)
 			parent.End()
@@ -380,7 +362,6 @@ func TestPollTick_RecordsOutcome(t *testing.T) {
 				}
 			}
 
-			// Registry lookups made during the tick are children of its span.
 			for _, l := range spansNamed(sr, opRegistryLookup) {
 				if l.Parent().SpanID() != tick.SpanContext().SpanID() {
 					t.Errorf("registry_lookup span parent = %v, want the poll_tick span %v", l.Parent().SpanID(), tick.SpanContext().SpanID())
@@ -390,10 +371,9 @@ func TestPollTick_RecordsOutcome(t *testing.T) {
 	}
 }
 
-// TestSyncTick_EmitsQueueClaimSpansAndMetrics drains a queue holding one item
-// that syncs (a retire with nothing to wipe) and one that fails (a sync with
-// no fetchable index), then the empty claim that ends the drain.
-func TestSyncTick_EmitsQueueClaimSpansAndMetrics(t *testing.T) {
+// The queue holds one item that syncs (a retire with nothing to wipe) and one
+// that fails (a sync with no fetchable index).
+func TestSyncTick_EmitsSyncNextSpansAndMetrics(t *testing.T) {
 	sr, reader := setupTelemetry(t)
 	ctx := context.Background()
 	fs := &fakeStore{}
@@ -498,8 +478,10 @@ func TestParkSweepTick_RecordsOutcome(t *testing.T) {
 			if tt.wantErrType != "" {
 				wantErrs = 1
 			}
-			if got := errorCount(t, reader, opLabels(opParkSweep, tt.wantStatus, tt.wantErrType)); tt.wantErrType != "" && got != 1 {
-				t.Errorf("park_sweep errors{error_type=%s} = %d, want 1", tt.wantErrType, got)
+			if tt.wantErrType != "" {
+				if got := errorCount(t, reader, opLabels(opParkSweep, tt.wantStatus, tt.wantErrType)); got != 1 {
+					t.Errorf("park_sweep errors{error_type=%s} = %d, want 1", tt.wantErrType, got)
+				}
 			}
 			if got := errorCount(t, reader, map[attribute.Key]string{telemetry.AttrOperation: opParkSweep}); got != wantErrs {
 				t.Errorf("park_sweep errors (any label) = %d, want %d", got, wantErrs)
@@ -508,9 +490,6 @@ func TestParkSweepTick_RecordsOutcome(t *testing.T) {
 	}
 }
 
-// TestCrawlRegistry_EmitsOnDemandCrawlSpanAndMetrics covers the on-demand
-// crawl's failure paths: its span is a new root (the run outlives the
-// request) linked back to the triggering request's span.
 func TestCrawlRegistry_EmitsOnDemandCrawlSpanAndMetrics(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -578,8 +557,6 @@ func TestCrawlRegistry_EmitsOnDemandCrawlSpanAndMetrics(t *testing.T) {
 	}
 }
 
-// TestInstrumentation_SafeWithNoopProviders: with telemetry not configured
-// (no-op global providers), every instrumented path still runs normally.
 func TestInstrumentation_SafeWithNoopProviders(t *testing.T) {
 	prevTP, prevMP := otel.GetTracerProvider(), otel.GetMeterProvider()
 	otel.SetTracerProvider(tracenoop.NewTracerProvider())
@@ -598,8 +575,6 @@ func TestInstrumentation_SafeWithNoopProviders(t *testing.T) {
 	s.parkSweepTick(ctx)
 }
 
-// A poll tick or sync routinely takes seconds to minutes; its duration must
-// land in a finite histogram bucket, not +Inf, or its quantiles are useless.
 func TestRecordOperation_LongDurationLandsInFiniteBucket(t *testing.T) {
 	_, reader := setupTelemetry(t)
 	recordOperation(context.Background(), opPollTick, statusSuccess, "", 45*time.Second)

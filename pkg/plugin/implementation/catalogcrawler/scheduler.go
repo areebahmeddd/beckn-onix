@@ -166,9 +166,8 @@ func (s *Scheduler) loop(ctx context.Context, interval time.Duration, fn func(co
 	}()
 }
 
-// Every tick below starts a new root span (trace.WithNewRoot): each tick is
-// its own trace, not a child of whatever span Start's ctx happened to carry,
-// and never one ever-growing trace spanning the scheduler's lifetime.
+// Each tick below starts a new root span, so every tick is its own trace
+// rather than part of one trace spanning the scheduler's lifetime.
 
 // parkSweepTick drives RequeueOrAbandonParked on its own independent
 // cadence -- Params.RequeueOrAbandonParked itself logs revived/abandoned
@@ -184,11 +183,9 @@ func (s *Scheduler) parkSweepTick(ctx context.Context) {
 	op.end(ctx, statusSuccess, "", nil)
 }
 
-// pollTick runs one PollIndexes pass. Besides an outright failure, it
-// records a pass that succeeded only partially (some registry networks or
-// discovery sources failed and were skipped -- see markPartialFailure) as a
-// partial_failure, so a persistently broken network hiding behind healthy
-// ones still shows up in onix_plugin_errors_total.
+// pollTick runs one PollIndexes pass. A pass that skipped failed networks or
+// sources is recorded as partial_failure, so a broken network hiding behind
+// healthy ones still shows up in onix_plugin_errors_total.
 func (s *Scheduler) pollTick(ctx context.Context) {
 	ctx, op := startOperation(ctx, opPollTick, trace.WithNewRoot())
 	ctx, partial := withPartialFailureTracking(ctx)
@@ -203,8 +200,7 @@ func (s *Scheduler) pollTick(ctx context.Context) {
 // (claimed=false, whether because the queue is empty or because ClaimNext
 // itself errored -- either way there is nothing more to usefully do this
 // tick, and erroring on every loop iteration would spin hot on a wedged
-// store instead of waiting for the next tick). The tick's span parents one
-// sync_next span per SyncNext call.
+// store instead of waiting for the next tick).
 func (s *Scheduler) syncTick(ctx context.Context) {
 	ctx, span := tracer().Start(ctx, spanNamePrefix+opSyncTick, trace.WithNewRoot())
 	itemsClaimed := 0
@@ -226,12 +222,8 @@ func (s *Scheduler) syncTick(ctx context.Context) {
 	}
 }
 
-// syncNext runs one SyncNext call under its own sync_next span and reports
-// whether an item was claimed. The outcome is: success (claimed and synced),
-// empty (nothing left to claim -- the normal end of a drain, not a failure),
-// or error -- either the claim itself failing (claim_failed), or a claimed
-// item's sync failing, classified by catalog-core's fault taxonomy
-// (syncErrorType).
+// syncNext runs one SyncNext call under a sync_next span and reports whether
+// an item was claimed.
 func (s *Scheduler) syncNext(ctx context.Context) bool {
 	ctx, op := startOperation(ctx, opSyncNext)
 	claimed, err := s.params.SyncNext(ctx)
