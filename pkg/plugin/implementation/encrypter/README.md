@@ -1,10 +1,10 @@
 # Encrypter
 
-`encrypter` implements `definition.Encrypter`. It backs the handler's optional `encrypt` step, which encrypts an outbound Beckn payload for the counterparty when the counterparty has published an `encr_public_key` in the registry. Its counterpart on the receiving side is [`decrypter`](../decrypter/README.md).
+`encrypter` implements `definition.Encrypter`. It backs the handler's optional `encrypt` step, which encrypts an outbound payload for a counterparty that publishes an `encr_public_key` in the registry. The receiving side is [`decrypter`](../decrypter/README.md).
 
-## Enabling
+## Config
 
-Encryption is opt-in per module. Add the plugin and the `encrypt` step to a **caller** module. The step needs the module's `keyManager` and `registry`. Place it after every step that reads the payload and before `sign` (start-up fails without a later `sign`):
+None. Add the plugin and the `encrypt` step to a caller module (it also needs `keyManager` and `registry`), after every step that reads the payload and before `sign`:
 
 ```yaml
 plugins:
@@ -17,31 +17,14 @@ steps:
   - sign
 ```
 
-If you omit the plugin and the step, encryption stays disabled. When it is enabled, encryption is opportunistic and per recipient. A message goes out in plaintext when:
-- there's no single recipient, as with a broadcast `search`;
-- the recipient has no discoverable key: its registry record has no `encr_public_key`, or the registry doesn't know it or can't look it up (e.g. `dediregistry` without a key id).
+Recipients without a discoverable key get plaintext; a registry outage fails the request. Behaviour, envelope format, key provisioning and the `dediregistry` key-id requirement are in [CONFIG.md](../../../../CONFIG.md#17-encrypter--decrypter-plugins).
 
-A registry outage (unreachable, timeout, invalid response) fails the request rather than sending plaintext.
+## Security caveats
 
-On `dediregistry`, lookups need the recipient's key id, which the step takes from earlier messages of the same transaction. Encryption therefore needs transaction history in a `payloadStore`, with `storePayload` placed after `validateSign` on the receiving module.
+`Encrypt(ctx, data, privateKeyBase64, publicKeyBase64)` derives an AES-256 key directly from a static-static X25519 ECDH secret and encrypts in AES-ECB with PKCS#7 padding. There is no KDF, IV or authentication tag, so the output:
 
-The full behaviour is in [CONFIG.md, Encrypter / Decrypter](../../../../CONFIG.md#17-encrypter--decrypter-plugins-optional-message-level-encryption), including the on-the-wire envelope, step ordering, key provisioning and registry requirements.
+- is deterministic and leaks repeated 16-byte blocks;
+- has no integrity of its own (the Beckn signature over the ciphertext provides it);
+- has no forward secrecy.
 
-## Config
-
-None.
-
-## Algorithm and security caveats
-
-`Encrypt(ctx, data, privateKeyBase64, publicKeyBase64)` works in three stages:
-1. It derives a 32-byte shared secret with X25519 ECDH from the sender's encryption private key and the recipient's encryption public key, both base64.
-2. It uses that secret directly as an AES-256 key.
-3. It encrypts `data` in **ECB mode with PKCS#7 padding** and returns the result as base64.
-
-The scheme has no IV, no KDF and no authentication tag, and the ECDH is static-static, so:
-- the output is deterministic;
-- it leaks repeated 16-byte blocks;
-- it has no integrity protection of its own;
-- it has no forward secrecy.
-
-Inside the ONIX pipeline, integrity comes from the Beckn signature, which is computed over the ciphertext (`encrypt` before `sign`, `validateSign` before `decrypt`). Moving to an authenticated scheme such as HPKE (RFC 9180), or ephemeral X25519 + HKDF + AES-GCM, is an open follow-up.
+Moving to an authenticated scheme (HPKE, or ephemeral X25519 + HKDF + AES-GCM) is an open follow-up.

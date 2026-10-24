@@ -13,63 +13,18 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 )
 
-// Optional message-level encryption (issue #727).
-//
-// The "encrypt" step (caller modules) and the "decrypt" step (receiver
-// modules) are opt-in: they only exist in a pipeline when they are listed in
-// the handler's steps, which in turn requires the encrypter / decrypter
-// plugins to be configured. Encryption is further gated per message on the
-// counterparty (opportunistic encryption): the encrypt step only encrypts
-// when the registry yields an encryption public key (encr_public_key) for the
-// recipient, and fails closed only when the registry cannot be reached; the
-// decrypt step only acts on payloads that carry the encrypted envelope.
-// Everything else passes through unchanged, so encrypting and non-encrypting
-// participants interoperate.
-//
-// # Wire format (ONIX-local, version "onix-v1")
-//
-// The Beckn "context" object stays in plaintext (routing, signature identity
-// checks, payload storage and telemetry all read it). Every other top-level
-// member of the body ("message", "error", ...) is serialised as a single JSON
-// object, encrypted, and replaced by one "encrypted" member:
-//
-//	{
-//	  "context": { ...unchanged... },
-//	  "encrypted": {
-//	    "version":        "onix-v1",
-//	    "senderId":       "<sender subscriber_id>",
-//	    "senderKeyId":    "<sender registry key_id>",
-//	    "recipientId":    "<recipient subscriber_id>",
-//	    "recipientKeyId": "<recipient registry key_id>",
-//	    "ciphertext":     "<base64 output of the encrypter plugin>"
-//	  }
-//	}
-//
-// The sender and recipient key ids are hints that let the recipient resolve
-// the sender's registered encryption public key (the encrypter/decrypter
-// plugins derive the content key with static-static ECDH, so the recipient
-// needs it) and detect a recipient-key mismatch up front.
-//
-// # Ordering
-//
-// Encryption happens before signing and decryption after signature
-// validation ("encrypt-then-sign"): the Authorization signature covers the
-// exact bytes on the wire, i.e. the envelope, so the receiver authenticates
-// the ciphertext before it is ever decrypted, and the signer identity is
-// bound to the envelope's senderId. Steps that need the plaintext payload
-// (see plaintextSteps) must run before "encrypt" and after "decrypt".
-// validateEncryptionStepOrder enforces both rules at start-up.
+// Every top-level body member except "context" (which routing, signature
+// checks and telemetry read) is encrypted into one "encrypted" member. The
+// ciphertext has no integrity of its own, so "encrypt" runs before "sign" and
+// "decrypt" after "validateSign": the signature covers the envelope.
 const (
-	// encryptedEnvelopeKey is the top-level body member that carries the
-	// encrypted envelope. Its presence is the marker the decrypt step keys on.
-	encryptedEnvelopeKey = "encrypted"
-	// encryptedEnvelopeVersion identifies the ONIX-local envelope format.
+	encryptedEnvelopeKey     = "encrypted"
 	encryptedEnvelopeVersion = "onix-v1"
-	// becknContextKey is the top-level body member that is never encrypted.
-	becknContextKey = "context"
+	becknContextKey          = "context"
 )
 
-// encryptedEnvelope is the value of the "encrypted" body member.
+// encryptedEnvelope is the value of the "encrypted" body member. The sender
+// key id lets the recipient find the sender's public key (static-static ECDH).
 type encryptedEnvelope struct {
 	Version        string `json:"version"`
 	SenderID       string `json:"senderId"`
@@ -79,7 +34,6 @@ type encryptedEnvelope struct {
 	Ciphertext     string `json:"ciphertext"`
 }
 
-// validate checks that every field the decrypt step relies on is present.
 func (e *encryptedEnvelope) validate() error {
 	if e.Version != encryptedEnvelopeVersion {
 		return fmt.Errorf("unsupported encrypted envelope version %q (expected %q)", e.Version, encryptedEnvelopeVersion)
@@ -97,16 +51,11 @@ func (e *encryptedEnvelope) validate() error {
 	return nil
 }
 
-// plaintextSteps are the built-in steps that inspect the message payload and
-// therefore must see plaintext: they must run before "encrypt" and after
-// "decrypt".
+// plaintextSteps read the payload, so they must run before "encrypt" and after "decrypt".
 var plaintextSteps = []string{"validateSchema", "checkPolicy", "mediateSchema", "transformPayload"}
 
-// validateEncryptionStepOrder rejects step lists in which "encrypt" or
-// "decrypt" are placed where they would break signing or plaintext-only
-// steps. The ciphertext carries no integrity protection of its own, so
-// "encrypt" requires a later "sign" and "decrypt" an earlier "validateSign".
-// Step lists without either step are always valid.
+// validateEncryptionStepOrder enforces encrypt-then-sign and keeps plaintextSteps
+// on the plaintext side of "encrypt" and "decrypt".
 func validateEncryptionStepOrder(steps []string) error {
 	if i := slices.Index(steps, "encrypt"); i >= 0 {
 		if j := slices.Index(steps, "sign"); j < i {
@@ -143,7 +92,6 @@ func marshalJSON(v any) ([]byte, error) {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
-// decodeTopLevel decodes body into its top-level members.
 func decodeTopLevel(step string, body []byte) (map[string]json.RawMessage, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
@@ -152,24 +100,17 @@ func decodeTopLevel(step string, body []byte) (map[string]json.RawMessage, error
 	return fields, nil
 }
 
-// ---------------------------------------------------------------------------
-// encryptStep — caller (outbound) side
-// ---------------------------------------------------------------------------
-
-// encryptStep encrypts the outbound payload for the counterparty when the
-// counterparty has published an encryption public key in the registry.
+// encryptStep encrypts the outbound payload for a counterparty that has
+// published an encryption public key in the registry.
 type encryptStep struct {
 	encrypter definition.Encrypter
 	km        definition.KeyManager
 	registry  definition.RegistryLookup
-	// payloadStore may be nil. When set, earlier messages of the same
-	// transaction are used to learn which registry key the recipient signs
-	// with, so the registry lookup can be keyed by key_id (required by
-	// registries such as dediregistry).
+	// payloadStore may be nil; earlier messages of the transaction give the
+	// recipient's key_id, which dediregistry lookups require.
 	payloadStore definition.PayloadStore
 }
 
-// newEncryptStep validates dependencies and returns the encrypt step.
 func newEncryptStep(encrypter definition.Encrypter, km definition.KeyManager, registry definition.RegistryLookup, payloadStore definition.PayloadStore) (definition.Step, error) {
 	if encrypter == nil {
 		return nil, fmt.Errorf("invalid config: Encrypter plugin not configured")
@@ -183,9 +124,8 @@ func newEncryptStep(encrypter definition.Encrypter, km definition.KeyManager, re
 	return &encryptStep{encrypter: encrypter, km: km, registry: registry, payloadStore: payloadStore}, nil
 }
 
-// Run replaces every non-context member of the body with an encrypted
-// envelope addressed to the counterparty, or leaves the body untouched when
-// there is no single counterparty or it has not published an encryption key.
+// Run replaces every non-context member of the body with an envelope for the
+// counterparty, or leaves the body as is when there is no key to encrypt for.
 func (s *encryptStep) Run(ctx *model.StepContext) error {
 	if len(ctx.Body) == 0 {
 		return nil
@@ -208,8 +148,6 @@ func (s *encryptStep) Run(ctx *model.StepContext) error {
 
 	recipientID := model.ResolveCallerID(reqContext, ctx.Role)
 	if recipientID == "" {
-		// e.g. a broadcast search without bpp_id: there is no single
-		// recipient whose key could be used.
 		log.Debugf(ctx, "encrypt: no counterparty id in context for role %q; sending unencrypted", ctx.Role)
 		return nil
 	}
@@ -220,15 +158,12 @@ func (s *encryptStep) Run(ctx *model.StepContext) error {
 	recipient, err := s.lookupRecipient(ctx, recipientID, s.recipientKeyHint(ctx, reqContext, recipientID))
 	if err != nil {
 		if isClientCodedErr(err) {
-			// The registry answered, but not with a usable key (e.g. not
-			// found, or dediregistry needs a key id we don't know).
-			// Encryption is opportunistic, so this is the same as a recipient
-			// without a published key.
+			// A definitive registry answer without a usable key: same as no published key.
 			log.Warnf(ctx, "encrypt: no encryption key could be determined for recipient %s, sending unencrypted: %v", recipientID, err)
 			return nil
 		}
-		// Fail closed on an outage: the recipient may have published a key,
-		// and silently downgrading to plaintext would defeat its opt-in.
+		// Fail closed on an outage: the recipient may have a key, and
+		// downgrading to plaintext would defeat its opt-in.
 		return fmt.Errorf("encrypt: failed to look up encryption key for recipient %s: %w", recipientID, err)
 	}
 	if recipient == nil {
@@ -277,25 +212,16 @@ func (s *encryptStep) Run(ctx *model.StepContext) error {
 	return nil
 }
 
-// isClientCodedErr reports whether err carries a 4xx *model.CodedErr.
-//
-// For a registry lookup this separates the registry's answer about the
-// looked-up subscriber from a failure to get an answer: registry plugins
-// classify the former as 4xx (dediregistry: AUT_SUBSCRIBER_NOT_FOUND for a
-// 404, AUT_SIGNATURE_INVALID for a missing key id, AUT_NETWORK_NOT_ALLOWED,
-// ...) and outages as 5xx (unreachable, timeout, bad upstream response,
-// cancelled). Unclassified errors, which is how the legacy registry plugin
-// reports every failure, count as outages.
+// isClientCodedErr reports whether err carries a 4xx *model.CodedErr. Registry
+// plugins use 4xx for answers about the subscriber; 5xx and unclassified errors
+// (the legacy registry plugin) are outages.
 func isClientCodedErr(err error) bool {
 	var coded *model.CodedErr
 	return errors.As(err, &coded) && coded.HTTPStatus() < http.StatusInternalServerError
 }
 
-// encryptFailure wraps an error from the encrypter plugin. Its 4xx
-// classifications describe a key (the recipient's published one or our own),
-// not the request being sent, so returning them would tell the calling
-// application its own request is malformed. They are reported unclassified
-// (500, full detail in the log).
+// encryptFailure drops a 4xx classification from an encrypter error: it is
+// about a key, not the caller's request, so it must not surface as a 400.
 func encryptFailure(msg string, err error) error {
 	if isClientCodedErr(err) {
 		return fmt.Errorf("%s: %v", msg, err)
@@ -303,9 +229,8 @@ func encryptFailure(msg string, err error) error {
 	return fmt.Errorf("%s: %w", msg, err)
 }
 
-// lookupRecipient returns the first usable registry record of recipientID
-// that carries an encryption public key, or nil when there is none (the
-// recipient has not opted in). keyIDHint narrows the lookup when known.
+// lookupRecipient returns the first usable record of recipientID with an
+// encryption public key, or nil when the recipient has not opted in.
 func (s *encryptStep) lookupRecipient(ctx *model.StepContext, recipientID, keyIDHint string) (*model.Subscription, error) {
 	records, err := s.registry.Lookup(ctx, &model.Subscription{
 		Subscriber: model.Subscriber{SubscriberID: recipientID},
@@ -327,10 +252,8 @@ func (s *encryptStep) lookupRecipient(ctx *model.StepContext, recipientID, keyID
 	return nil, nil
 }
 
-// recipientKeyHint returns the registry key id the recipient used to sign the
-// most recent message of this transaction that the PayloadStore holds (e.g.
-// the request a callback answers), or "" when unknown. A hint is optional:
-// failures are logged and degrade to a subscriber-wide registry lookup.
+// recipientKeyHint returns the key id the recipient signed its latest stored
+// message of this transaction with, or "" when unknown.
 func (s *encryptStep) recipientKeyHint(ctx *model.StepContext, reqContext map[string]any, recipientID string) string {
 	if s.payloadStore == nil {
 		return ""
@@ -362,18 +285,13 @@ func (s *encryptStep) recipientKeyHint(ctx *model.StepContext, reqContext map[st
 	return ""
 }
 
-// ---------------------------------------------------------------------------
-// decryptStep — receiver (inbound) side
-// ---------------------------------------------------------------------------
-
-// decryptStep restores the plaintext payload of an inbound message that
-// carries an encrypted envelope. Messages without the envelope pass through.
+// decryptStep restores the plaintext of an inbound encrypted payload.
+// Messages without the envelope pass through.
 type decryptStep struct {
 	decrypter definition.Decrypter
 	km        definition.KeyManager
 }
 
-// newDecryptStep validates dependencies and returns the decrypt step.
 func newDecryptStep(decrypter definition.Decrypter, km definition.KeyManager) (definition.Step, error) {
 	if decrypter == nil {
 		return nil, fmt.Errorf("invalid config: Decrypter plugin not configured")
@@ -384,8 +302,7 @@ func newDecryptStep(decrypter definition.Decrypter, km definition.KeyManager) (d
 	return &decryptStep{decrypter: decrypter, km: km}, nil
 }
 
-// Run decrypts the envelope and rebuilds the original body around the
-// plaintext context.
+// Run decrypts the envelope and rebuilds the body around the plaintext context.
 func (s *decryptStep) Run(ctx *model.StepContext) error {
 	if len(ctx.Body) == 0 {
 		return nil
@@ -447,8 +364,7 @@ func (s *decryptStep) Run(ctx *model.StepContext) error {
 		return model.NewBadReqErr("", fmt.Errorf("decrypt: decrypted payload is not a JSON object"))
 	}
 	if _, ok := payload[becknContextKey]; ok {
-		// The plaintext context is what was signed and routed on; never let
-		// the encrypted part override it.
+		// The plaintext context was signed and routed on; the ciphertext must not override it.
 		return model.NewBadReqErr("", fmt.Errorf("decrypt: decrypted payload must not contain %q", becknContextKey))
 	}
 	payload[becknContextKey] = contextRaw
@@ -461,12 +377,9 @@ func (s *decryptStep) Run(ctx *model.StepContext) error {
 	return nil
 }
 
-// checkEnvelopeSender binds the envelope to the request signer: the
-// Authorization keyId (subscriber and key) must be the envelope's sender and
-// sender key. This stops a participant from replaying someone else's
-// ciphertext under its own signature, and makes the sender's encryption key
-// come from the same registry record validateSign authenticated. Signature
-// validity is validateSign's job, which start-up guarantees runs first.
+// checkEnvelopeSender requires the Authorization keyId to name the envelope's
+// sender and key, so no one can re-sign another participant's ciphertext, and
+// the sender's encryption key comes from the record validateSign authenticated.
 func checkEnvelopeSender(ctx *model.StepContext, env *encryptedEnvelope) error {
 	header := ctx.Request.Header.Get(model.AuthHeaderSubscriber)
 	if header == "" {

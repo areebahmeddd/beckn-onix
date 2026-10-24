@@ -54,10 +54,8 @@ type stdHandler struct {
 	transportWrapper   definition.TransportWrapper
 	payloadTransformer definition.Step
 	payloadStore       definition.PayloadStore
-	// encrypter / decrypter are non-nil only when configured; they back the
-	// optional "encrypt" / "decrypt" steps (see encryptionstep.go).
-	encrypter definition.Encrypter
-	decrypter definition.Decrypter
+	encrypter          definition.Encrypter
+	decrypter          definition.Decrypter
 	// ackSigner is non-nil only when the "signAck" step is configured (Receiver
 	// modules). It is also used to sign pipeline-NACK responses so that ALL
 	// synchronous responses carry a Signature header per NFH-007 CON-004-02.

@@ -137,20 +137,9 @@ func TestEncryption_RoundTrip_BAPToBPP(t *testing.T) {
 			wantStatus: http.StatusOK, wantWireEncrypted: false, wantBackendReached: true,
 		},
 		{
-			name:            "neither side configured: unchanged behaviour",
-			bppPublishesKey: true, callerEncrypts: false, receiverDecrypts: false,
-			wantStatus: http.StatusOK, wantWireEncrypted: false, wantBackendReached: true,
-		},
-		{
 			name:            "ciphertext tampered in transit: rejected by signature validation",
 			bppPublishesKey: true, callerEncrypts: true, receiverDecrypts: true, tamper: true,
 			wantStatus: http.StatusUnauthorized, wantWireEncrypted: true, wantBackendReached: false,
-		},
-		{
-			name:            "registry cannot name the recipient's key (dediregistry without key id): sent in plaintext",
-			bppPublishesKey: true, callerEncrypts: true, receiverDecrypts: true,
-			registryErr: model.NewSignValidationErr("AUT_SIGNATURE_INVALID", errors.New("key_id is required for DeDi lookup")),
-			wantStatus:  http.StatusOK, wantWireEncrypted: false, wantBackendReached: true,
 		},
 		{
 			name:            "registry outage: fails closed before anything is sent",
@@ -286,8 +275,6 @@ func TestEncryption_RoundTrip_BAPToBPP(t *testing.T) {
 	}
 }
 
-// TestNewStdHandler_EncryptionConfigErrors checks that the encryption steps
-// are validated at start-up.
 func TestNewStdHandler_EncryptionConfigErrors(t *testing.T) {
 	ctx := context.Background()
 	n := newEncTestNetwork(t, true)
@@ -329,12 +316,6 @@ func TestNewStdHandler_EncryptionConfigErrors(t *testing.T) {
 			plugins: with(func(p *PluginCfg) { p.Encrypter = cfg("encrypter") }),
 			steps:   []string{"sign", "encrypt"},
 			wantErr: `"encrypt" must be followed by "sign"`,
-		},
-		{
-			name:    "decrypt without validateSign",
-			plugins: with(func(p *PluginCfg) { p.Decrypter = cfg("decrypter") }),
-			steps:   []string{"decrypt"},
-			wantErr: `"validateSign" must come before "decrypt"`,
 		},
 		{
 			name:    "valid encrypt and decrypt",

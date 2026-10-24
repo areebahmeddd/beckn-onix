@@ -738,8 +738,8 @@ modules:
 - `addRoute` - Determine routing destination
 - `sign` - Sign outgoing request
 - `storePayload` - Record request payload in cache
-- `encrypt` - Encrypt the payload for the counterparty when it has published an encryption key (caller modules; requires the `encrypter` plugin, see [Encrypter / Decrypter](#17-encrypter--decrypter-plugins-optional-message-level-encryption))
-- `decrypt` - Decrypt an encrypted payload (receiver modules; requires the `decrypter` plugin)
+- `encrypt` - Encrypt the payload for the counterparty (caller modules, `encrypter` plugin, see [section 17](#17-encrypter--decrypter-plugins))
+- `decrypt` - Decrypt an encrypted payload (receiver modules, `decrypter` plugin)
 - `transformPayload` - Apply JSONata payload transformation
 - `publish` - Publish to message queue
 
@@ -1435,94 +1435,71 @@ plugins:
 **Parameters**:
 - `root`: **Required**. Local directory root the store reads/writes under. Should be the same path a reverse proxy / tunnel serves publicly at `catalogPublisher.config.catalogBaseURL`, so published URLs actually resolve.
 
----
+#### 17. Encrypter / Decrypter Plugins
 
-#### 17. Encrypter / Decrypter Plugins (optional message-level encryption)
-
-**Purpose**: Optional end-to-end encryption of the Beckn payload between two network participants, keyed on the counterparty's registry `encr_public_key` (`encryptionPublicKey` in the Beckn/DeDi registry spec). The `encrypter` plugin backs the `encrypt` step on **caller** modules; the `decrypter` plugin backs the `decrypt` step on **receiver** modules. Leaving the plugins and steps out of a module keeps encryption disabled for it — no code change is needed to switch it on or off.
+**Purpose**: Optional message-level encryption of the Beckn payload, keyed on the counterparty's registry `encr_public_key`. `encrypter` backs the `encrypt` step on caller modules; `decrypter` backs the `decrypt` step on receiver modules. Leave the plugins and steps out to keep encryption off.
 
 **Configuration**:
 ```yaml
-# Caller module (e.g. bapTxnCaller / bppTxnCaller)
-handler:
-  plugins:
-    registry:   { id: registry, config: { url: http://registry:3030/subscribers } }
-    keyManager: { id: simplekeymanager, config: { ... } }   # must hold an X25519 encryption key pair
-    signer:     { id: signer }
-    router:     { id: router, config: { ... } }
-    encrypter:
-      id: encrypter
-  steps:
-    - validateSchema   # optional — must run before encrypt (needs plaintext)
-    - addRoute
-    - encrypt          # after any step that reads the payload, before sign
-    - sign
+# Caller module (also needs keyManager and registry)
+plugins:
+  encrypter:
+    id: encrypter
+steps:
+  - validateSchema
+  - addRoute
+  - encrypt
+  - sign
 
-# Receiver module (e.g. bapTxnReceiver / bppTxnReceiver)
-handler:
-  plugins:
-    registry:      { id: registry, config: { ... } }
-    keyManager:    { id: simplekeymanager, config: { ... } }
-    signValidator: { id: signvalidator }
-    router:        { id: router, config: { ... } }
-    decrypter:
-      id: decrypter
-  steps:
-    - validateSign     # verifies the signature over the encrypted wire body
-    - decrypt          # before any step that reads the payload
-    - validateSchema
-    - checkPolicy
-    - addRoute
-    - signAck
+# Receiver module (also needs keyManager)
+plugins:
+  decrypter:
+    id: decrypter
+steps:
+  - validateSign
+  - decrypt
+  - validateSchema
+  - addRoute
+  - signAck
 ```
 
-**Parameters**: Neither plugin takes configuration. The `encrypt` step additionally requires the module's `keyManager` and `registry`; the `decrypt` step requires `keyManager`. A missing dependency fails at start-up.
+**Parameters**: None.
 
-**Opt-in semantics**: encryption is **opportunistic and per recipient**, so encrypting and non-encrypting participants interoperate.
-- `encrypt` resolves the recipient from `context` (`bpp_id`/`bppId` for a BAP, `bap_id`/`bapId` for a BPP) and looks it up in the registry. It encrypts only when that yields a usable record (status not `EXPIRED`/`UNSUBSCRIBED`/`INVALID_SSL`) with a non-empty `encr_public_key`.
-- A recipient with no discoverable key gets the message in **plaintext**. That covers a record without `encr_public_key`, a recipient the registry doesn't know, and a registry that answers the lookup with a client error (4xx), such as `dediregistry` needing a key id the adapter doesn't have. The last two are logged at `warn` level with the recipient and the reason. Broadcast messages with no single recipient (a `search` without `bpp_id`) and gateway-role modules are also sent in plaintext.
-- A registry **outage** fails the request (NACK) instead of falling back to plaintext: registry unreachable, timeout, an invalid registry response, or any error the registry plugin doesn't classify (the legacy `registry` plugin classifies none, so any failed lookup through it fails the request). The recipient may have published a key, and silently downgrading would defeat its opt-in.
-- `decrypt` only acts on bodies that carry the top-level `encrypted` member. Any other JSON body passes through unchanged. It doesn't (yet) *require* encryption from senders.
+**Behaviour** (opportunistic per recipient, so encrypting and non-encrypting participants interoperate):
+- `encrypt` takes the recipient from `context` (`bpp_id` for a BAP, `bap_id` for a BPP) and encrypts only if the registry returns a usable record with an `encr_public_key`.
+- It sends plaintext when there is no single recipient (a `search` without `bpp_id`, gateway modules), when the record has no key or an unusable status, or when the registry answers with a 4xx (unknown subscriber, `dediregistry` needing a key id). The 4xx cases are logged at `warn`.
+- A registry outage (unreachable, timeout, invalid response, or an unclassified error, which is every failure of the legacy `registry` plugin) fails the request instead of downgrading to plaintext.
+- `decrypt` only acts on bodies with a top-level `encrypted` member; anything else passes through. It does not require senders to encrypt.
 
-**Wire format (ONIX-local envelope, version `onix-v1`)**: `context` stays plaintext, because routing, signature identity checks, payload storage and telemetry all read it. Every other top-level member (`message`, `error`, ...) is serialised as one JSON object, encrypted, and replaced by a single `encrypted` member:
+**Step order** (checked at start-up; the signature must cover the ciphertext):
+- `encrypt` must be followed by `sign`, and `decrypt` preceded by `validateSign`.
+- `validateSchema`, `checkPolicy`, `mediateSchema` and `transformPayload` need plaintext: put them before `encrypt` and after `decrypt`. Place custom payload-reading steps the same way.
+- `storePayload` stores the body as it sees it: the envelope after `encrypt` or before `decrypt`, plaintext otherwise.
+
+**Wire format** (ONIX-specific, not part of the Beckn spec, so only ONIX adapters with `decrypt` can read it): `context` stays plaintext and every other top-level member is replaced by:
 ```json
-{
-  "context": { "action": "select", "bapId": "bap.example.com", "bppId": "bpp.example.com" },
-  "encrypted": {
-    "version": "onix-v1",
-    "senderId": "bap.example.com",
-    "senderKeyId": "<sender registry key_id>",
-    "recipientId": "bpp.example.com",
-    "recipientKeyId": "<recipient registry key_id>",
-    "ciphertext": "<base64 output of the encrypter plugin>"
-  }
+"encrypted": {
+  "version": "onix-v1",
+  "senderId": "bap.example.com",
+  "senderKeyId": "<sender key_id>",
+  "recipientId": "bpp.example.com",
+  "recipientKeyId": "<recipient key_id>",
+  "ciphertext": "<base64>"
 }
 ```
-The receiver resolves the sender's `encr_public_key` with `keyManager.LookupNPKeys(senderId, senderKeyId)` and decrypts with its own `encrPrivateKey`. It rejects the message if:
-- the envelope isn't addressed to its own subscriber id or key id;
-- the `Authorization` header's `keyId` (subscriber and key) isn't the envelope's `senderId` and `senderKeyId`;
-- the decrypted payload tries to supply its own `context`.
+The receiver rejects a message whose envelope is not addressed to its own subscriber and key id, whose `Authorization` `keyId` is not the envelope's sender and sender key, or whose decrypted payload contains `context`.
 
-This envelope is specific to ONIX. It isn't part of the Beckn specification, so only ONIX adapters with the `decrypt` step can read it.
+**Keys**:
+- The `keyManager` keyset needs a base64 X25519 pair as `encrPrivateKey`/`encrPublicKey` (`simplekeymanager` config or the Vault keyset secret). Several sample configs in `config/` reuse the Ed25519 signing values there: generate a real X25519 pair (e.g. `openssl genpkey -algorithm X25519`) before enabling encryption.
+- Publish the public key as the subscriber's `encr_public_key`, under the `key_id` you sign with.
+- `dediregistry` lookups need the recipient's key id, which `encrypt` takes from the latest message the recipient signed in the same transaction. That needs a `payloadStore` with `storeSignature: "true"` sharing a cache with the module that received that message, where `storePayload` must come after `validateSign`. Without that history (including the first message to a counterparty), messages over DeDi go out in plaintext.
 
-**Ordering — encrypt-then-sign**: the signature covers the exact bytes on the wire (the envelope). The receiver therefore authenticates the ciphertext in `validateSign` before decrypting it, and the signer is bound to the envelope's sender. Start-up rejects a step list in which:
-- `encrypt` is not followed by `sign`;
-- `decrypt` is not preceded by `validateSign`;
-- any of `validateSchema`, `checkPolicy`, `mediateSchema` or `transformPayload` comes after `encrypt` or before `decrypt`, since these steps need the plaintext.
-
-Place custom payload-reading step plugins the same way. `storePayload` on a caller module placed after `sign` stores the encrypted body. On a receiver module, place it after `decrypt` to store plaintext or before `decrypt` to store the envelope.
-
-**Key provisioning**:
-- **Local keys**: the `keyManager` keyset's `EncrPrivate`/`EncrPublic` must be a real **X25519** key pair, base64-encoded (32 raw bytes each). The `simplekeymanager` takes them as `encrPrivateKey`/`encrPublicKey`, next to the signing keys. The Vault `keymanager` stores them as `encrPrivateKey`/`encrPublicKey` in the keyset secret, and its `GenerateKeyset` creates an X25519 pair. Note that several sample configs in `config/` reuse the Ed25519 signing values as placeholders for these fields: generate a proper X25519 pair before turning encryption on (e.g. `openssl genpkey -algorithm X25519`, or Go `crypto/ecdh`).
-- **Published key**: publish the X25519 public key as the subscriber's `encr_public_key` in the registry, under the same `key_id` you sign with. Counterparties encrypt only when this field is set.
-- **Registry lookups**: the sender looks the recipient up by subscriber id and, when known, key id. The key id comes from the most recent message of the same transaction that the recipient signed, provided a `payloadStore` with `storeSignature: "true"` is configured on the module and shared, through the same cache, with the module that received that message (e.g. the request a callback answers). The legacy `registry` plugin supports lookups by subscriber id alone. `dediregistry` requires a key id, so **on DeDi, encryption needs transaction history in a `payloadStore`**: a first message to a counterparty, and every message when no `payloadStore` is configured, goes out in plaintext. On the module that receives the counterparty's messages, place `storePayload` after `validateSign` so the key id is only ever taken from authenticated messages.
-
-**Security notes — read before production use**: the bundled `encrypter`/`decrypter` plugins derive the AES-256 key directly from a static-static X25519 ECDH shared secret (no KDF) and encrypt with **AES in ECB mode with PKCS#7 padding** (no IV, no authentication tag). Consequences:
-- Identical plaintext blocks produce identical ciphertext blocks, and identical messages between the same pair of keys produce identical ciphertexts.
-- The ciphertext itself has no integrity protection. Integrity comes only from the Beckn signature (keep `validateSign` before `decrypt`).
-- There is no forward secrecy: compromising either party's encryption private key exposes all past traffic between the pair.
-
-Replacing the scheme (for example HPKE/RFC 9180, or ephemeral X25519 + HKDF + AES-256-GCM) is tracked as a follow-up. The envelope's `version` field allows that change without ambiguity.
+**Security caveats** of the bundled plugins (read before production use):
+- AES-256-ECB with PKCS#7 padding, keyed directly with a static-static X25519 ECDH secret: no KDF, IV or authentication tag.
+- Deterministic: repeated messages, and repeated 16-byte blocks, between the same key pair give identical ciphertext.
+- No integrity of its own: keep `validateSign` before `decrypt`.
+- No forward secrecy: leaking either private key exposes all past traffic between the pair.
+- Moving to an authenticated scheme (HPKE, or ephemeral X25519 + HKDF + AES-GCM) is a follow-up; the envelope `version` allows it.
 
 ---
 
