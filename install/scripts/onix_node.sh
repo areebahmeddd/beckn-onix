@@ -269,8 +269,7 @@ onix_collect_role() {
     esac
 }
 
-# onix_init_network INDEX NAME PREFIX - start describing network INDEX. NAME
-# is shown to the user; PREFIX ("" or "/<name>") is prepended to module paths.
+# onix_init_network INDEX NAME PREFIX
 onix_init_network() {
     local i=$1
     onix_net_name[i]=$2
@@ -286,9 +285,8 @@ onix_init_network() {
     return 0
 }
 
-# onix_use_legacy_registry INDEX URL [PUBLIC_URL] - network INDEX uses the
-# /lookup registry at URL (registry plugin). PUBLIC_URL is the address shown to
-# people when the adapter reaches the registry differently, e.g. over Docker.
+# onix_use_legacy_registry INDEX URL [PUBLIC_URL]: PUBLIC_URL is the address
+# shown to people when the adapter reaches the registry another way (Docker).
 onix_use_legacy_registry() {
     onix_net_registry_type[$1]="legacy"
     onix_net_registry_url[$1]=$2
@@ -296,12 +294,10 @@ onix_use_legacy_registry() {
     onix_net_network_ids[$1]=""
 }
 
-# onix_registry_display_url INDEX - the registry URL to show for network INDEX.
 onix_registry_display_url() {
     printf '%s' "${onix_net_registry_public_url[$1]:-${onix_net_registry_url[$1]}}"
 }
 
-# onix_collect_registry INDEX - which registry network INDEX uses.
 onix_collect_registry() {
     local i=$1 choice url ids
     echo -e "\nWhich registry does the network use?"
@@ -331,9 +327,8 @@ onix_collect_registry() {
     fi
 }
 
-# onix_collect_protocol INDEX [SEARCH_DEFAULT] - protocol version, domain and
-# the gateway / discovery URL of network INDEX. SEARCH_DEFAULT pre-fills the
-# gateway / discovery URL prompt.
+# onix_collect_protocol INDEX [SEARCH_DEFAULT]: SEARCH_DEFAULT pre-fills the
+# gateway or discovery URL.
 onix_collect_protocol() {
     local i=$1 search_default=${2:-} version domain search_url default_version="1.1.0"
     [[ "${onix_net_registry_type[i]}" == "dedi" ]] && default_version="2.0.0"
@@ -993,9 +988,8 @@ onix_legacy_registry_login() {
     printf '%s' "$api_key"
 }
 
-# onix_legacy_register INDEX ROLE API_KEY [REGISTRY_URL] - POST
-# <registry>/register. REGISTRY_URL overrides the network's registry URL, e.g.
-# to reach a registry on this host whose configured URL is a container name.
+# onix_legacy_register INDEX ROLE API_KEY [REGISTRY_URL]: POST <registry>/register.
+# REGISTRY_URL overrides a configured URL this host cannot reach (a container name).
 onix_legacy_register() {
     local i=$1 role=$2 api_key=$3 registry=${4:-${onix_net_registry_url[$1]}} id url key_id spub epub
     local domain=${onix_net_domain[$1]} response code reg_status
@@ -1009,10 +1003,9 @@ onix_legacy_register() {
         onix_legacy_post_subscriber "$registry" "$api_key" "$id" "$key_id" "$url" "$domain" "$spub" "$epub" "$role" || return 1
         code=${onix_registry_response: -3}
         response=${onix_registry_response%???}
-        # The registry only accepts domains its administrator has defined; like
-        # the legacy installer, register without a specific domain otherwise.
+        # The registry rejects domains its admin has not defined; " " means no domain.
         if [[ "$code" == "400" && "$response" == *"Invalid domain"* && "$domain" != " " ]]; then
-            echo "${YELLOW}The registry does not define domain '$domain'; registering $id without a domain. Add the domain in the registry and update the subscriber if needed.${NC}"
+            echo "${YELLOW}The registry does not define domain '$domain'; registering $id without one. Add the domain in the registry and update the subscriber if needed.${NC}"
             domain=" "
             continue
         fi
@@ -1029,8 +1022,7 @@ onix_legacy_register() {
 }
 
 # onix_legacy_post_subscriber REGISTRY API_KEY ID KEY_ID URL DOMAIN SIGNING_PUB
-# ENCR_PUB TYPE - POST one subscriber; sets onix_registry_response to the
-# response body followed by the 3-digit HTTP status.
+# ENCR_PUB TYPE: sets onix_registry_response to the body plus the HTTP status.
 onix_legacy_post_subscriber() {
     local body
     body=$(jq -n --arg id "$3" --arg key "$4" --arg url "$5" --arg domain "$6" \
@@ -1042,8 +1034,7 @@ onix_legacy_post_subscriber() {
         -H "ApiKey:$2" -H "Content-Type: application/json" --data-raw "$body")
 }
 
-# onix_register_network_participants INDEX API_KEY [REGISTRY_URL] - register
-# every role of this node in network INDEX.
+# onix_register_network_participants INDEX API_KEY [REGISTRY_URL]
 onix_register_network_participants() {
     local rc=0
     if onix_has_bap; then onix_legacy_register "$1" BAP "$2" "${3:-}" || rc=1; fi

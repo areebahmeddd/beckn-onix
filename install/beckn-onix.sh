@@ -84,9 +84,8 @@ install_gateway() {
 
 # Function to install Beckn Registry
 # Usage: install_registry [public_registry_url] [admin_registry_url]
-# admin_registry_url is where this script reaches the registry to upload role
-# permissions (defaults to public_registry_url); a production registry is
-# reached on this host before its public URL is wired up.
+# Role permissions are uploaded via admin_registry_url (default
+# public_registry_url), as a new production registry is not public yet.
 install_registry() {
     if [[ $1 ]]; then
         update_registry_details $1
@@ -127,8 +126,7 @@ install_layer2_config() {
     rm -f $FILENAME >/dev/null 2>&1
 }
 
-# Function to install BAP Protocol Server for the local network (Option 4) -
-# creates registry entries only
+# Function to install BAP Protocol Server - creates registry entries only
 install_bap_protocol_server() {
     bash scripts/update_bap_config.sh
     echo "Protocol server BAP registry entries created successfully"
@@ -649,8 +647,7 @@ install_beckn_one_adapter() {
     echo "  - Redis: localhost:6379"
 }
 
-# Function to set up an ONIX adapter node from the collected onix_* inputs
-# after confirmation: see deploy_onix_node.
+# Function to set up the ONIX adapter node from the collected onix_* inputs
 setup_onix_node() {
     onix_print_summary
     if ! onix_prompt_yes_no "Proceed with this setup?" Y; then
@@ -662,12 +659,10 @@ setup_onix_node() {
     deploy_onix_node
 }
 
-# Function to deploy the collected ONIX adapter node: generate keys, write
-# config/onix-node/, print (and optionally submit) the registry registration
-# details and start the adapter with its own Redis.
+# Function to deploy the ONIX adapter node without asking for confirmation
 # Usage: deploy_onix_node [local_registry_admin_url]
-# With local_registry_admin_url the subscribers are registered automatically
-# in the registry this script installed; otherwise registration is offered.
+# With local_registry_admin_url the subscribers are registered in the registry
+# this script installed; otherwise registration is offered.
 deploy_onix_node() {
     local api_key
 
@@ -699,15 +694,13 @@ deploy_onix_node() {
     onix_print_next_steps
 }
 
-# Function to choose the host address the registry and gateway ports are
-# published on, and persist it in install/.env, which docker compose reads
-# for every compose file in this directory (so later restarts and option 7
-# updates keep the binding).
+# Function to choose the bind address of the registry and gateway ports. It is
+# saved in install/.env, which docker compose reads for every compose file
+# here, so restarts and option 7 updates keep it.
 configure_network_services_bind_address() {
     local addr="127.0.0.1" env_file=".env"
-    echo "The registry and gateway publish ports 3030/3000 and 4030/4000. Production deployments put a"
-    echo "TLS-terminating reverse proxy in front of them and keep the raw ports off the internet."
-    if ! onix_prompt_yes_no "Publish the registry and gateway ports on 127.0.0.1 only (recommended when the reverse proxy runs on this host)?" Y; then
+    echo "The registry and gateway publish ports 3000/3030 and 4000/4030; in production they sit behind a TLS reverse proxy."
+    if ! onix_prompt_yes_no "Publish the registry and gateway ports on 127.0.0.1 only (recommended with a reverse proxy on this host)?" Y; then
         addr="0.0.0.0"
         echo "${YELLOW}Make sure a firewall keeps ports 3000, 3030, 4000 and 4030 private.${NC}"
     fi
@@ -718,9 +711,8 @@ configure_network_services_bind_address() {
     fi
 }
 
-# Function to confirm reconfiguring existing registry/gateway containers. They
-# are removed so they are recreated with the new configuration; their data
-# volumes are kept. Nothing is removed unless the user confirms.
+# Function to remove existing containers, once confirmed, so they are recreated
+# with the new configuration (data volumes are kept)
 # Usage: confirm_service_reinstall name...
 confirm_service_reinstall() {
     local name existing=""
@@ -744,7 +736,7 @@ confirm_service_reinstall() {
 install_network_gateway() {
     install_gateway "$1" "$2"
     echo ""
-    echo "The gateway subscribes itself with the registry at $1, so that URL must already be reachable from this machine."
+    echo "Subscribing the gateway needs the registry at $1 to be reachable from this machine."
     if onix_prompt_yes_no "Subscribe the gateway with the registry now?" N; then
         bash scripts/register_gateway.sh
         echo ""
@@ -771,36 +763,31 @@ print_production_network_next_steps() {
     local net_registry_url=$1 net_gateway_url=$2
     echo ""
     echo "${BLUE}Next steps for the production network${NC}"
-    echo "1. Change the default administrator password (user '$USERNAME') of the registry${net_gateway_url:+ and the gateway}"
-    echo "   BEFORE they are reachable from the internet: until then anyone who reaches them can administer"
-    echo "   the network. Log in from this machine (or an SSH tunnel) at http://127.0.0.1:3030/login${net_gateway_url:+ and http://127.0.0.1:4030/login}."
-    echo "2. DNS and TLS: point the public names at this machine and terminate TLS in a reverse proxy"
-    echo "   (nginx, Caddy, a cloud load balancer) that forwards:"
+    echo "1. Change the default password of '$USERNAME' on the registry${net_gateway_url:+ and the gateway} BEFORE they are"
+    echo "   reachable from the internet; until then anyone who reaches them can administer the network."
+    echo "   Log in from this machine (or an SSH tunnel) at http://127.0.0.1:3030/login${net_gateway_url:+ and http://127.0.0.1:4030/login}."
+    echo "2. Point the public names at this machine and terminate TLS in a reverse proxy that forwards:"
     [[ -n "$net_registry_url" ]] && echo "     $net_registry_url -> http://127.0.0.1:3030"
     [[ -n "$net_gateway_url" ]] && echo "     $net_gateway_url -> http://127.0.0.1:4030"
     echo "   Ports 3000 and 4000 are not needed behind the proxy; keep them private."
     echo "3. Participants join with option 1, using $net_registry_url/subscribers as the registry URL."
 }
 
-# Function to create a new production network (Option 2): a self-hosted
-# registry and gateway, optionally with this machine's ONIX adapter as the
-# network's first participant, or guidance for a Beckn One network.
+# Function to create a new production network (Option 2)
 create_production_network() {
     local choice components net_registry_url="" net_gateway_url="" with_gateway=0 with_adapter=0
     local adapter_search_url=""
     echo "${GREEN}................Creating a new production network................${NC}"
-    echo "A network needs a registry that participants register with; Beckn 1.x networks also use a"
-    echo "gateway to broadcast search requests."
+    echo "A network needs a registry; Beckn 1.x networks also use a gateway to broadcast search."
     echo -e "\nWhere will the network's registry live?"
     echo "1. Self-hosted Beckn registry (and gateway) on this machine"
     echo "2. Beckn One (hosted DeDi registry)"
     onix_prompt_choice choice "Enter your choice" 2
     if [[ $choice -eq 2 ]]; then
         echo ""
-        echo "Beckn One networks are created and their participants approved through Beckn One itself"
-        echo "(see https://docs.beckn.io/creating-an-open-network/setting-up-the-network-environment);"
-        echo "there is no registry or gateway to install. Once the network exists, every participant"
-        echo "runs an ONIX adapter that joins it with the network ID (option 1)."
+        echo "Beckn One networks are created, and participants approved, through Beckn One itself, so there is"
+        echo "nothing to install (see https://docs.beckn.io/creating-an-open-network/setting-up-the-network-environment)."
+        echo "Each participant then joins with an ONIX adapter and the network ID (option 1)."
         if onix_prompt_yes_no "Set up an ONIX adapter for that network on this machine now?" Y; then
             join_existing_network
         fi
@@ -855,8 +842,8 @@ create_production_network() {
     ((with_gateway)) && echo "  Gateway  : $net_gateway_url (this machine, port 4030)"
     ((with_adapter)) && onix_print_summary
     echo ""
-    echo "The registry and gateway are configured for their public URLs; set up DNS and a TLS reverse"
-    echo "proxy for them (printed again at the end). Setup itself talks to them on this machine."
+    echo "The registry and gateway are configured for their public URLs, but setup reaches them on this machine."
+    echo "The DNS and TLS proxy steps are printed at the end."
     if ! onix_prompt_yes_no "Proceed with this setup?" Y; then
         restart_script
         return

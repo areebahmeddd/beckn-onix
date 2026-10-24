@@ -182,8 +182,8 @@ cd install
 
 | Option | What it does |
 |---|---|
-| 1. Join an existing network | Configures and starts an ONIX adapter (BAP, BPP or both) for a network that already has a registry, or installs a Beckn gateway for it — see below |
-| 2. Create new production network | Installs a self-hosted registry (and gateway) for public URLs, optionally with an ONIX adapter as the first participant; or guides you to Beckn One — see below |
+| 1. Join an existing network | Configures and starts an ONIX adapter (BAP, BPP or both) for an existing registry, or installs a Beckn gateway for it |
+| 2. Create new production network | Installs a self-hosted registry (and gateway), optionally with an ONIX adapter as the first participant, or points you to Beckn One |
 | 3. Local network with Beckn One | Local BAP + BPP adapters and sandboxes using the Beckn One DeDi registry |
 | 4. Local network with local registry and gateway | Local registry, gateway, adapter and sandbox |
 | 5. Merge multiple networks | Legacy registry-to-registry copy |
@@ -233,19 +233,17 @@ server {
 
 #### Creating a production network (option 2)
 
-A network needs a registry that participants register with; Beckn 1.x networks also use a gateway to broadcast `search`.
+- **Beckn One**: nothing to install. The network is created through Beckn One ([network setup](https://docs.beckn.io/creating-an-open-network/setting-up-the-network-environment)), and each participant joins it with option 1, which the installer offers to start.
+- **Self-hosted**: installs the Beckn registry (`fidedocker/registry`) and optionally the gateway (`fidedocker/gateway`), configured for the public URLs you enter. It can also run an ONIX adapter on the same machine as the first participant: the adapter reaches the registry and gateway over the Docker network and is registered automatically (status `INITIATED`; a domain the registry does not define is left out). "Gateway only" installs a gateway for an existing registry.
 
-- **Beckn One** — the registry is the hosted DeDi registry, so there is nothing to install: the network is created through Beckn One ([network setup](https://docs.beckn.io/creating-an-open-network/setting-up-the-network-environment)) and each participant then joins it with option 1. The installer offers to continue with option 1.
-- **Self-hosted** — the installer deploys the Beckn registry (`fidedocker/registry`) and, optionally, the gateway (`fidedocker/gateway`) on this machine, configured for the public URLs you enter (e.g. `https://registry.example.com`). It can also run an ONIX adapter on the same machine as the network's first participant: the adapter reaches the registry and gateway over the Docker network, and its subscribers are registered in the new registry automatically (the registry sets their status to `INITIATED`; a domain the registry does not define yet is left out). "Gateway only" installs a gateway for an existing registry.
+Notes:
 
-Production choices made by the installer:
+- The registry and gateway ports (3000/3030, 4000/4030) are bound to `127.0.0.1` by default. The choice is saved as `BECKN_SERVICES_BIND_ADDRESS` in `install/.env`, so restarts and option 7 updates keep it.
+- Setup reaches the registry on `http://localhost:3030`, so DNS and TLS need not be ready. The gateway subscribes with the registry's public URL, so that step can wait: `cd install && bash scripts/register_gateway.sh`.
+- Existing `registry` and `gateway` containers are recreated only after confirmation; their data volumes are kept.
+- Terminate TLS in a reverse proxy (`https://registry.example.com` → `http://127.0.0.1:3030`, `https://gateway.example.com` → `http://127.0.0.1:4030`). Ports 3000 and 4000 are not needed behind it.
 
-- The registry and gateway ports (3000/3030, 4000/4030) are published on `127.0.0.1` by default; the choice is saved as `BECKN_SERVICES_BIND_ADDRESS` in `install/.env`, which docker compose reads for every compose file in `install/`, so restarts and option 7 updates keep it.
-- Setup talks to the registry on `http://localhost:3030` (role permissions, subscriber registration), so it does not depend on DNS or TLS being ready. The gateway subscribes itself with the registry's public URL, so subscribing it is optional at install time (`cd install && bash scripts/register_gateway.sh` later).
-- Existing `registry` / `gateway` containers are only recreated after confirmation; their data volumes are kept.
-- TLS is left to a reverse proxy or load balancer; the installer prints the mapping (`https://registry.example.com` → `http://127.0.0.1:3030`, `https://gateway.example.com` → `http://127.0.0.1:4030`). Ports 3000 and 4000 are not needed behind the proxy.
-
-Right after installation — before the reverse proxy makes them reachable from the internet — change the default `root` password of the registry (and gateway), e.g. at `http://127.0.0.1:3030/login` on the host; then approve participants in the registry. Participants join with option 1, using `https://registry.example.com/subscribers` as the registry URL.
+Before the proxy makes them public, change the default `root` password of the registry (and gateway), e.g. at `http://127.0.0.1:3030/login`. Then approve participants in the registry; they join with option 1, using `https://registry.example.com/subscribers` as the registry URL.
 
 ---
 
