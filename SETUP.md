@@ -254,7 +254,7 @@ One adapter can take part in several networks, the way [2.2](#22-running-multipl
 /mobility/bap/caller/   /mobility/bap/receiver/    → registry, keys and routing of network "mobility"
 ```
 
-Each network has its own registry plugin (a `/lookup` registry or the DeDi registry), subscriber IDs (`<base>/<name>/bap/receiver` by default), keys (new, existing, or reused from the first network), protocol version and domain, and routing files (`routing-<module>-<name>.yaml`). Role, public base URL, application URLs and Redis are shared. `registration-info.txt` lists what to register in each network.
+Each network has its own registry plugin (a `/lookup` registry or the DeDi registry), subscriber IDs and URLs (URLs default to `<base>/<name>/bap/receiver`), keys (new, existing, or reused from the first network), protocol version and domain, and routing files (`routing-<module>-<name>.yaml`). Role, public base URL, application URLs and Redis are shared. `registration-info.txt` lists what to register in each network.
 
 For several Beckn One networks that use the same subscriber ID, option 1 is enough: enter all network IDs, comma-separated, and the `dediregistry` plugin accepts participants from each of them (`allowedNetworkIDs`).
 
