@@ -4,7 +4,7 @@
 
 ## Enabling
 
-Encryption is opt-in per module. Add the plugin and the `encrypt` step to a **caller** module. The step needs the module's `keyManager` and `registry`. Place it after every step that reads the payload and before `sign`:
+Encryption is opt-in per module. Add the plugin and the `encrypt` step to a **caller** module. The step needs the module's `keyManager` and `registry`. Place it after every step that reads the payload and before `sign` (start-up fails without a later `sign`):
 
 ```yaml
 plugins:

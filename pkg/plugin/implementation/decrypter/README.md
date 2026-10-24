@@ -4,7 +4,7 @@
 
 ## Enabling
 
-Decryption is opt-in per module. Add the plugin and the `decrypt` step to a **receiver** module. The step needs the module's `keyManager`. Place it after `validateSign` and before every step that reads the payload:
+Decryption is opt-in per module. Add the plugin and the `decrypt` step to a **receiver** module. The step needs the module's `keyManager`. Place it after `validateSign` (start-up fails without it) and before every step that reads the payload:
 
 ```yaml
 plugins:
@@ -21,7 +21,7 @@ steps:
 
 The step only acts on bodies that carry the top-level `encrypted` envelope. Unencrypted messages pass through unchanged, so senders that don't encrypt keep working. The step reads the sender's `encr_public_key` from the registry via `keyManager.LookupNPKeys(senderId, senderKeyId)`. It also checks that:
 - the envelope is addressed to this subscriber and key;
-- the request signer is the envelope's sender.
+- the request signer (`Authorization` `keyId` subscriber and key) is the envelope's sender.
 
 The full behaviour, envelope format and key provisioning are in [CONFIG.md, Encrypter / Decrypter](../../../../CONFIG.md#17-encrypter--decrypter-plugins-optional-message-level-encryption).
 
