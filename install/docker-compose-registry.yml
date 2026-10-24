@@ -6,8 +6,8 @@ services:
     networks:
       - beckn_network
     ports:
-      - 3000:3000
-      - 3030:3030
+      - "${BECKN_SERVICES_BIND_ADDRESS:-0.0.0.0}:3000:3000"
+      - "${BECKN_SERVICES_BIND_ADDRESS:-0.0.0.0}:3030:3030"
     restart: unless-stopped
     volumes:
       - registry_data_volume:/registry/overrideProperties/config

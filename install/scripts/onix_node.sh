@@ -211,6 +211,7 @@ onix_reset_state() {
     onix_net_prefix=()
     onix_net_registry_type=()
     onix_net_registry_url=()
+    onix_net_registry_public_url=()
     onix_net_network_ids=()
     onix_net_version=()
     onix_net_domain=()
@@ -268,14 +269,41 @@ onix_collect_role() {
     esac
 }
 
-# onix_collect_network INDEX NAME PREFIX: registry and protocol of network
-# INDEX. PREFIX ("" or "/<name>") is prepended to its module paths.
-onix_collect_network() {
-    local i=$1 choice url ids version domain search_url default_version
+# onix_init_network INDEX NAME PREFIX - start describing network INDEX. NAME
+# is shown to the user; PREFIX ("" or "/<name>") is prepended to module paths.
+onix_init_network() {
+    local i=$1
     onix_net_name[i]=$2
-    ((i + 1 > onix_net_count)) && onix_net_count=$((i + 1))
     onix_net_prefix[i]=$3
+    onix_net_registry_type[i]=""
+    onix_net_registry_url[i]=""
+    onix_net_registry_public_url[i]=""
+    onix_net_network_ids[i]=""
+    onix_net_version[i]=""
+    onix_net_domain[i]=""
+    onix_net_search_url[i]=""
+    ((i + 1 > onix_net_count)) && onix_net_count=$((i + 1))
+    return 0
+}
 
+# onix_use_legacy_registry INDEX URL [PUBLIC_URL] - network INDEX uses the
+# /lookup registry at URL (registry plugin). PUBLIC_URL is the address shown to
+# people when the adapter reaches the registry differently, e.g. over Docker.
+onix_use_legacy_registry() {
+    onix_net_registry_type[$1]="legacy"
+    onix_net_registry_url[$1]=$2
+    onix_net_registry_public_url[$1]=${3:-$2}
+    onix_net_network_ids[$1]=""
+}
+
+# onix_registry_display_url INDEX - the registry URL to show for network INDEX.
+onix_registry_display_url() {
+    printf '%s' "${onix_net_registry_public_url[$1]:-${onix_net_registry_url[$1]}}"
+}
+
+# onix_collect_registry INDEX - which registry network INDEX uses.
+onix_collect_registry() {
+    local i=$1 choice url ids
     echo -e "\nWhich registry does the network use?"
     echo "1. Beckn One / DeDi registry (dediregistry plugin)"
     echo "2. Registry with a /lookup API, such as the Beckn registry (registry plugin)"
@@ -296,15 +324,19 @@ onix_collect_network() {
         fi
         onix_net_network_ids[i]=$ids
         onix_net_registry_url[i]=""
-        default_version="2.0.0"
     else
-        onix_net_registry_type[i]="legacy"
         echo "${BLUE}The adapter calls <registry URL>/lookup, so include the subscriber API path.${NC}"
         onix_prompt_url url "Registry URL (e.g. https://registry.example.com/subscribers)"
-        onix_net_registry_url[i]=$url
-        onix_net_network_ids[i]=""
-        default_version="1.1.0"
+        onix_use_legacy_registry "$i" "$url"
     fi
+}
+
+# onix_collect_protocol INDEX [SEARCH_DEFAULT] - protocol version, domain and
+# the gateway / discovery URL of network INDEX. SEARCH_DEFAULT pre-fills the
+# gateway / discovery URL prompt.
+onix_collect_protocol() {
+    local i=$1 search_default=${2:-} version domain search_url default_version="1.1.0"
+    [[ "${onix_net_registry_type[i]}" == "dedi" ]] && default_version="2.0.0"
 
     while true; do
         onix_prompt version "Beckn protocol version" "$default_version"
@@ -331,12 +363,20 @@ onix_collect_network() {
     search_url=""
     if onix_has_bap; then
         if onix_is_v2 "$version"; then
-            onix_prompt_url search_url "Discovery service URL for 'discover' (empty uses the bpp_uri of the request)" "" optional
+            onix_prompt_url search_url "Discovery service URL for 'discover' (empty uses the bpp_uri of the request)" "$search_default" optional
         else
-            onix_prompt_url search_url "Gateway URL for 'search', e.g. https://gateway.example.com/bg (empty uses the bpp_uri of the request)" "" optional
+            onix_prompt_url search_url "Gateway URL for 'search', e.g. https://gateway.example.com/bg (empty uses the bpp_uri of the request)" "$search_default" optional
         fi
     fi
     onix_net_search_url[i]=$search_url
+}
+
+# onix_collect_network INDEX NAME PREFIX: registry and protocol of network
+# INDEX. PREFIX ("" or "/<name>") is prepended to its module paths.
+onix_collect_network() {
+    onix_init_network "$1" "$2" "$3"
+    onix_collect_registry "$1"
+    onix_collect_protocol "$1"
 }
 
 # onix_collect_participant INDEX BAP|BPP: subscriber identity and keys.
@@ -468,7 +508,7 @@ onix_print_summary() {
         if [[ "${onix_net_registry_type[i]}" == "dedi" ]]; then
             echo "    Registry      : Beckn One / DeDi${onix_net_network_ids[i]:+ (networks: ${onix_net_network_ids[i]})}"
         else
-            echo "    Registry      : ${onix_net_registry_url[i]}"
+            echo "    Registry      : $(onix_registry_display_url "$i")"
         fi
         echo "    Version       : ${onix_net_version[i]}${onix_net_domain[i]:+, domain ${onix_net_domain[i]}}"
         [[ -n "${onix_net_search_url[i]}" ]] && echo "    Search target : ${onix_net_search_url[i]}"
@@ -859,8 +899,8 @@ onix_emit_registration_info() {
             echo "  Register each subscriber below in the DeDi registry. If its record ID differs from"
             echo "  unique_key_id, set keyId in adapter.yaml to the record ID."
         else
-            echo "Network ${onix_net_name[i]:-$((i + 1))}: registry ${onix_net_registry_url[i]}"
-            echo "  Register each subscriber below with the registry (e.g. POST ${onix_net_registry_url[i]}/register) and"
+            echo "Network ${onix_net_name[i]:-$((i + 1))}: registry $(onix_registry_display_url "$i")"
+            echo "  Register each subscriber below with the registry (e.g. POST $(onix_registry_display_url "$i")/register) and"
             echo "  ask the registry administrator to approve it."
         fi
         if onix_has_bap; then onix_emit_participant_info "$i" BAP; fi
@@ -936,6 +976,10 @@ onix_write_config() {
 # The login API is <base>/login next to <base>/subscribers.
 onix_legacy_registry_login() {
     local login_url="${1%/subscribers}/login" body response api_key
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "${RED}jq is required to talk to the registry API.${NC}" >&2
+        return 1
+    fi
     body=$(jq -n --arg n "$2" --arg p "$3" '{Name: $n, Password: $p}') || return 1
     response=$(curl -s -H "Accept: application/json" -H "Content-Type: application/json" -d "$body" "$login_url") || return 1
     api_key=$(printf '%s' "$response" | jq -r '.api_key // empty' 2>/dev/null)
@@ -949,28 +993,62 @@ onix_legacy_registry_login() {
     printf '%s' "$api_key"
 }
 
-# onix_legacy_register INDEX ROLE API_KEY: POST <registry>/register.
+# onix_legacy_register INDEX ROLE API_KEY [REGISTRY_URL] - POST
+# <registry>/register. REGISTRY_URL overrides the network's registry URL, e.g.
+# to reach a registry on this host whose configured URL is a container name.
 onix_legacy_register() {
-    local i=$1 role=$2 api_key=$3 id url key_id spub epub body status
+    local i=$1 role=$2 api_key=$3 registry=${4:-${onix_net_registry_url[$1]}} id url key_id spub epub
+    local domain=${onix_net_domain[$1]} response code reg_status
     if [[ "$role" == "BAP" ]]; then
         id=${onix_bap_id[i]} url=${onix_bap_url[i]} key_id=${onix_bap_key_id[i]} spub=${onix_bap_sign_pub[i]} epub=${onix_bap_encr_pub[i]}
     else
         id=${onix_bpp_id[i]} url=${onix_bpp_url[i]} key_id=${onix_bpp_key_id[i]} spub=${onix_bpp_sign_pub[i]} epub=${onix_bpp_encr_pub[i]}
     fi
     onix_valid_dates
-    body=$(jq -n --arg id "$id" --arg key "$key_id" --arg url "$url" --arg domain "${onix_net_domain[i]}" \
-        --arg spub "$spub" --arg epub "$epub" --arg from "$onix_valid_from" --arg until "$onix_valid_until" --arg type "$role" \
+    while true; do
+        onix_legacy_post_subscriber "$registry" "$api_key" "$id" "$key_id" "$url" "$domain" "$spub" "$epub" "$role" || return 1
+        code=${onix_registry_response: -3}
+        response=${onix_registry_response%???}
+        # The registry only accepts domains its administrator has defined; like
+        # the legacy installer, register without a specific domain otherwise.
+        if [[ "$code" == "400" && "$response" == *"Invalid domain"* && "$domain" != " " ]]; then
+            echo "${YELLOW}The registry does not define domain '$domain'; registering $id without a domain. Add the domain in the registry and update the subscriber if needed.${NC}"
+            domain=" "
+            continue
+        fi
+        break
+    done
+    if [[ "$code" =~ ^2 ]]; then
+        reg_status=$(printf '%s' "$response" | jq -r '.status // empty' 2>/dev/null)
+        echo "${GREEN}✓ Registered $role $id with $registry${reg_status:+ (status: $reg_status)}${NC}"
+        return 0
+    fi
+    echo "${RED}Error: registering $role $id with $registry failed (HTTP $code): $response${NC}"
+    echo "${RED}Register it manually using registration-info.txt.${NC}"
+    return 1
+}
+
+# onix_legacy_post_subscriber REGISTRY API_KEY ID KEY_ID URL DOMAIN SIGNING_PUB
+# ENCR_PUB TYPE - POST one subscriber; sets onix_registry_response to the
+# response body followed by the 3-digit HTTP status.
+onix_legacy_post_subscriber() {
+    local body
+    body=$(jq -n --arg id "$3" --arg key "$4" --arg url "$5" --arg domain "$6" \
+        --arg spub "$7" --arg epub "$8" --arg from "$onix_valid_from" --arg until "$onix_valid_until" --arg type "$9" \
         '{subscriber_id: $id, pub_key_id: $key, unique_key_id: $key, subscriber_url: $url, domain: $domain,
           extended_attributes: {domains: []}, encr_public_key: $epub, signing_public_key: $spub,
           valid_from: $from, valid_until: $until, type: $type, country: "IND", status: "SUBSCRIBED"}') || return 1
-    status=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${onix_net_registry_url[i]}/register" \
-        -H "ApiKey:$api_key" -H "Content-Type: application/json" --data-raw "$body")
-    if [[ "$status" =~ ^2 ]]; then
-        echo "${GREEN}✓ Registered $role $id with ${onix_net_registry_url[i]}${NC}"
-        return 0
-    fi
-    echo "${RED}Error: registering $role $id with ${onix_net_registry_url[i]} failed (HTTP $status). Register it manually.${NC}"
-    return 1
+    onix_registry_response=$(curl -s -w "%{http_code}" -X POST "$1/register" \
+        -H "ApiKey:$2" -H "Content-Type: application/json" --data-raw "$body")
+}
+
+# onix_register_network_participants INDEX API_KEY [REGISTRY_URL] - register
+# every role of this node in network INDEX.
+onix_register_network_participants() {
+    local rc=0
+    if onix_has_bap; then onix_legacy_register "$1" BAP "$2" "${3:-}" || rc=1; fi
+    if onix_has_bpp; then onix_legacy_register "$1" BPP "$2" "${3:-}" || rc=1; fi
+    return $rc
 }
 
 # Offers to create the subscriber entries in each /lookup registry with the
@@ -989,8 +1067,7 @@ onix_offer_legacy_registration() {
             echo "${RED}Login to the registry failed. Register the subscribers manually using registration-info.txt.${NC}"
             continue
         fi
-        if onix_has_bap; then onix_legacy_register "$i" BAP "$api_key"; fi
-        if onix_has_bpp; then onix_legacy_register "$i" BPP "$api_key"; fi
+        onix_register_network_participants "$i" "$api_key"
     done
     return 0
 }

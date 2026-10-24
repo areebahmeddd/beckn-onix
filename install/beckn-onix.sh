@@ -82,7 +82,11 @@ install_gateway() {
     echo "Gateway installation successful"
 }
 
-# Function to install Beckn Gateway and Beckn Registry
+# Function to install Beckn Registry
+# Usage: install_registry [public_registry_url] [admin_registry_url]
+# admin_registry_url is where this script reaches the registry to upload role
+# permissions (defaults to public_registry_url); a production registry is
+# reached on this host before its public URL is wired up.
 install_registry() {
     if [[ $1 ]]; then
         update_registry_details $1
@@ -96,7 +100,9 @@ install_registry() {
     echo "Registry installation successful"
 
     #Update Role Permission for registry.
-    if [[ $1 ]]; then
+    if [[ $2 ]]; then
+        bash scripts/registry_role_permissions.sh "$2"
+    elif [[ $1 ]]; then
         bash scripts/registry_role_permissions.sh $1
     else
         bash scripts/registry_role_permissions.sh
@@ -121,37 +127,11 @@ install_layer2_config() {
     rm -f $FILENAME >/dev/null 2>&1
 }
 
-# Function to install BAP Protocol Server - creates registry entries only
+# Function to install BAP Protocol Server for the local network (Option 4) -
+# creates registry entries only
 install_bap_protocol_server() {
-    if [[ $1 ]]; then
-        registry_url=$1
-        bap_subscriber_id=$2
-        bap_subscriber_key_id=$3
-        bap_subscriber_url=$4
-        bash scripts/update_bap_config.sh $registry_url $bap_subscriber_id $bap_subscriber_key_id $bap_subscriber_url $api_key $np_domain
-    else
-        bash scripts/update_bap_config.sh
-    fi
-    
+    bash scripts/update_bap_config.sh
     echo "Protocol server BAP registry entries created successfully"
-}
-
-# Function to install BPP Protocol Server - creates registry entries only
-install_bpp_protocol_server() {
-    echo "${GREEN}................Installing Protocol Server for BPP................${NC}"
-
-    if [[ $1 ]]; then
-        registry_url=$1
-        bpp_subscriber_id=$2
-        bpp_subscriber_key_id=$3
-        bpp_subscriber_url=$4
-        webhook_url=$5
-        bash scripts/update_bpp_config.sh $registry_url $bpp_subscriber_id $bpp_subscriber_key_id $bpp_subscriber_url $webhook_url $api_key $np_domain
-    else
-        bash scripts/update_bpp_config.sh
-    fi
-
-    echo "Protocol server BPP registry entries created successfully"
 }
 
 mergingNetworks() {
@@ -215,18 +195,7 @@ install_bpp_protocol_server_with_sandbox() {
     echo "Sandbox installation successful"
 
     echo "${GREEN}................Installing Protocol Server for BPP................${NC}"
-
-    if [[ $1 ]]; then
-        registry_url=$1
-        bpp_subscriber_id=$2
-        bpp_subscriber_key_id=$3
-        bpp_subscriber_url=$4
-        webhook_url=$5
-        bash scripts/update_bpp_config.sh $registry_url $bpp_subscriber_id $bpp_subscriber_key_id $bpp_subscriber_url $webhook_url $api_key $np_domain
-    else
-        bash scripts/update_bpp_config.sh
-    fi
-
+    bash scripts/update_bpp_config.sh
     echo "Protocol server BPP registry entries created successfully"
 }
 
@@ -241,308 +210,6 @@ layer2_config() {
             echo "${RED}Invalid URL format. Please enter a valid URL starting with http:// or https://.${NC}"
         fi
     done
-}
-
-# Validate the user credentials against the Registry
-validate_user() {
-    # Prompt for username
-    read -p "Enter your registry username: " username
-
-    # Prompt for password with '*' masking
-    echo -n "Enter your registry password: "
-    stty -echo # Disable terminal echo
-
-    password=""
-    while IFS= read -r -n1 char; do
-        if [[ "$char" == $'\0' ]]; then
-            break
-        fi
-        password+="$char"
-        echo -n "*" # Display '*' for each character typed
-    done
-    stty echo # Re-enable terminal echo
-    echo      # Move to a new line after input
-
-    # Replace '/subscribers' with '/login' for validation
-    local login_url="${registry_url%/subscribers}/login"
-
-    # Validate credentials using a POST request
-    local response
-    response=$(curl -s -w "%{http_code}" -X POST "$login_url" \
-        -H "Content-Type: application/json" \
-        -d '{ "Name" : "'"$username"'", "Password" : "'"$password"'" }')
-
-    # Check if the HTTP response is 200 (success)
-    status_code="${response: -3}"
-    if [ "$status_code" -eq 200 ]; then
-        response_body="${response%???}"
-        api_key=$(echo "$response_body" | jq -r '.api_key')
-        return 0
-    else
-        response=$(curl -s -w "%{http_code}" -X POST "$login_url" \
-            -H "Content-Type: application/json" \
-            -d '{ "User" : { "Name" : "'"$username"'", "Password" : "'"$password"'" }}')
-
-        status_code="${response: -3}"
-        if [ "$status_code" -eq 200 ]; then
-            response_body="${response%???}"
-            api_key=$(echo "$response_body" | jq -r '.api_key')
-            return 0
-        fi
-    fi
-    echo "Please check your credentials or register new user on $login_url"
-    return 1
-}
-
-get_np_domain() {
-    if [[ $2 ]]; then
-        read -p "Do you want to setup this $1 and $2 for specific domain? {Y/N} " dchoice
-    else
-        read -p "Do you want to setup this $1 for specific domain? {Y/N} " dchoice
-    fi
-
-    if [[ "$dchoice" == "Y" || "$dchoice" == "y" ]]; then
-        local login_url="${registry_url%/subscribers}"
-        read -p "Enter the domain name for $1 : " np_domain
-        domain_present=$(curl -s -H "ApiKey:$api_key" --header 'Content-Type: application/json' $login_url/network_domains/index | jq -r '.[].name' | tr '\n' ' ')
-        if echo "$domain_present" | grep -Fqw "$np_domain"; then
-            return 0
-        else
-            echo "${BoldRed}The domain '$np_domain' is NOT present in the network domains.${NC}"
-            echo "${BoldGreen}Available network domains: $domain_present ${NC}"
-        fi
-    else
-        np_domain=" " #If user don't want to add specific domain then save empty string
-        return 0
-    fi
-}
-
-# Function to handle the setup process for each platform
-completeSetup() {
-    platform=$1
-
-    public_address="https://<your public IP address>"
-
-    echo "Proceeding with the setup for $platform..."
-
-    case $platform in
-    "Registry")
-        while true; do
-            read -p "Enter publicly accessible registry URL: " registry_url
-            if [[ $registry_url =~ ^(http|https):// ]]; then
-                break
-            else
-                echo "${RED}Invalid URL format. Please enter a valid URL starting with http:// or https://.${NC}"
-            fi
-        done
-
-        new_registry_url="${registry_url%/}"
-        public_address=$registry_url
-        install_package
-        install_registry $new_registry_url
-        ;;
-    "Gateway" | "Beckn Gateway")
-        while true; do
-            read -p "Enter your registry URL: " registry_url
-            if [[ $registry_url =~ ^(http|https):// ]]; then
-                break
-            else
-                echo "${RED}Invalid URL format. Please enter a valid URL starting with http:// or https://.${NC}"
-            fi
-        done
-
-        while true; do
-            read -p "Enter publicly accessible gateway URL: " gateway_url
-            if [[ $gateway_url =~ ^(http|https):// ]]; then
-                gateway_url="${gateway_url%/}"
-                break
-            else
-                echo "${RED}Invalid URL format. Please enter a valid URL starting with http:// or https://.${NC}"
-            fi
-        done
-
-        public_address=$gateway_url
-        install_package
-        install_gateway $registry_url $gateway_url
-        ;;
-    "BAP")
-        echo "${GREEN}................Installing Protocol Server for BAP................${NC}"
-
-        read -p "Enter BAP Subscriber ID: " bap_subscriber_id
-        while true; do
-            read -p "Enter BAP Subscriber URL: " bap_subscriber_url
-            if [[ $bap_subscriber_url =~ ^(http|https):// ]]; then
-                break
-            else
-                echo "${RED}Invalid URL format. Please enter a valid URL starting with http:// or https://.${NC}"
-            fi
-        done
-
-        while true; do
-            read -p "Enter the registry URL (e.g., https://registry.becknprotocol.io/subscribers): " registry_url
-            if [[ $registry_url =~ ^(http|https):// ]] && [[ $registry_url == */subscribers ]]; then
-                break
-            else
-                echo "${RED}Invalid URL format. Please enter a valid URL starting with http:// or https://.${NC}"
-            fi
-        done
-        validate_user
-        if [ $? -eq 1 ]; then
-            exit
-        fi
-
-        get_np_domain $bap_subscriber_id
-        if [ $? -eq 1 ]; then
-            exit
-        fi
-
-        bap_subscriber_key_id="$bap_subscriber_id-key"
-        public_address=$bap_subscriber_url
-
-        # layer2_config  # Commented out - ONIX adapter handles schemas differently
-        install_package
-        install_bap_protocol_server $registry_url $bap_subscriber_id $bap_subscriber_key_id $bap_subscriber_url
-        
-        # Ask if user wants ONIX adapter
-        read -p "${GREEN}Do you want to install ONIX adapter (Y/N): ${NC}" onix_choice
-        if [[ "$onix_choice" == "Y" || "$onix_choice" == "y" ]]; then
-            install_bap_adapter
-        fi
-        ;;
-    "BPP")
-        echo "${GREEN}................Installing Protocol Server for BPP................${NC}"
-
-        read -p "Enter BPP Subscriber ID: " bpp_subscriber_id
-        while true; do
-            read -p "Enter BPP Subscriber URL: " bpp_subscriber_url
-            if [[ $bpp_subscriber_url =~ ^(http|https):// ]]; then
-                break
-            else
-                echo "${RED}Invalid URL format. Please enter a valid URL starting with http:// or https://.${NC}"
-            fi
-        done
-
-        while true; do
-            read -p "Enter Webhook URL: " webhook_url
-            if [[ $webhook_url =~ ^(http|https):// ]]; then
-                break
-            else
-                echo "${RED}Invalid URL format. Please enter a valid URL starting with http:// or https://.${NC}"
-            fi
-        done
-
-        while true; do
-            read -p "Enter the registry URL (e.g., https://registry.becknprotocol.io/subscribers): " registry_url
-            if [[ $registry_url =~ ^(http|https):// ]] && [[ $registry_url == */subscribers ]]; then
-                break
-            else
-                echo "${RED}Please mention /subscribers in your registry URL${NC}"
-            fi
-        done
-        validate_user
-        if [ $? -eq 1 ]; then
-            exit
-        fi
-
-        get_np_domain $bpp_subscriber_id
-        if [ $? -eq 1 ]; then
-            exit
-        fi
-
-        bpp_subscriber_key_id="$bpp_subscriber_id-key"
-        public_address=$bpp_subscriber_url
-
-        # layer2_config  # Commented out - ONIX adapter handles schemas differently
-        install_package
-        install_bpp_protocol_server $registry_url $bpp_subscriber_id $bpp_subscriber_key_id $bpp_subscriber_url $webhook_url
-        
-        # Ask if user wants ONIX adapter
-        read -p "${GREEN}Do you want to install ONIX adapter  (Y/N): ${NC}" onix_choice
-        if [[ "$onix_choice" == "Y" || "$onix_choice" == "y" ]]; then
-            install_bpp_adapter
-        fi
-        ;;
-    "ALL")
-        # Collect all inputs at once for all components
-
-        # Registry input
-        while true; do
-            read -p "Enter publicly accessible registry URL: " registry_url
-            if [[ $registry_url =~ ^(http|https):// ]]; then
-                break
-            else
-                echo "${RED}Invalid URL format. Please enter a valid URL starting with http:// or https://.${NC}"
-            fi
-        done
-
-        # Gateway inputs
-        while true; do
-            read -p "Enter publicly accessible gateway URL: " gateway_url
-            if [[ $gateway_url =~ ^(http|https):// ]]; then
-                gateway_url="${gateway_url%/}"
-                break
-            else
-                echo "${RED}Invalid URL format. Please enter a valid URL starting with http:// or https://.${NC}"
-            fi
-        done
-
-        # BAP inputs
-        read -p "Enter BAP Subscriber ID: " bap_subscriber_id
-        while true; do
-            read -p "Enter BAP Subscriber URL: " bap_subscriber_url
-            if [[ $bap_subscriber_url =~ ^(http|https):// ]]; then
-                break
-            else
-                echo "${RED}Invalid URL format. Please enter a valid URL starting with http:// or https://.${NC}"
-            fi
-        done
-
-        # BPP inputs
-        read -p "Enter BPP Subscriber ID: " bpp_subscriber_id
-        while true; do
-            read -p "Enter BPP Subscriber URL: " bpp_subscriber_url
-            if [[ $bpp_subscriber_url =~ ^(http|https):// ]]; then
-                break
-            else
-                echo "${RED}Invalid URL format. Please enter a valid URL starting with http:// or https://.${NC}"
-            fi
-        done
-
-        while true; do
-            read -p "Enter Webhook URL: " webhook_url
-            if [[ $webhook_url =~ ^(http|https):// ]]; then
-                break
-            else
-                echo "${RED}Invalid URL format. Please enter a valid URL starting with http:// or https://.${NC}"
-            fi
-        done
-
-        # Install components after gathering all inputs
-        install_package
-
-        install_registry $registry_url
-
-        install_gateway $registry_url $gateway_url
-
-        # layer2_config  # Commented out - ONIX adapter handles schemas differently
-        #Append /subscribers for registry_url
-        new_registry_url="${registry_url%/}/subscribers"
-        bap_subscriber_key_id="$bap_subscriber_id-key"
-        install_bap_protocol_server $new_registry_url $bap_subscriber_id $bap_subscriber_key_id $bap_subscriber_url
-
-        bpp_subscriber_key_id="$bpp_subscriber_id-key"
-        install_bpp_protocol_server $new_registry_url $bpp_subscriber_id $bpp_subscriber_key_id $bpp_subscriber_url $webhook_url
-        
-        # Ask if user wants ONIX adapter
-        read -p "${GREEN}Do you want to install ONIX adapter (Y/N): ${NC}" onix_choice
-        if [[ "$onix_choice" == "Y" || "$onix_choice" == "y" ]]; then
-            install_adapter "BOTH"
-        fi
-        ;;
-    *)
-        echo "Unknown platform: $platform"
-        ;;
-    esac
 }
 
 restart_script() {
@@ -982,7 +649,8 @@ install_beckn_one_adapter() {
     echo "  - Redis: localhost:6379"
 }
 
-# Function to set up the ONIX adapter node from the collected onix_* inputs
+# Function to set up an ONIX adapter node from the collected onix_* inputs
+# after confirmation: see deploy_onix_node.
 setup_onix_node() {
     onix_print_summary
     if ! onix_prompt_yes_no "Proceed with this setup?" Y; then
@@ -991,6 +659,17 @@ setup_onix_node() {
     fi
 
     install_package
+    deploy_onix_node
+}
+
+# Function to deploy the collected ONIX adapter node: generate keys, write
+# config/onix-node/, print (and optionally submit) the registry registration
+# details and start the adapter with its own Redis.
+# Usage: deploy_onix_node [local_registry_admin_url]
+# With local_registry_admin_url the subscribers are registered automatically
+# in the registry this script installed; otherwise registration is offered.
+deploy_onix_node() {
+    local api_key
 
     echo "${GREEN}................Preparing keys for ONIX adapter................${NC}"
     if ! onix_resolve_all_keys; then
@@ -1004,11 +683,193 @@ setup_onix_node() {
 
     echo ""
     cat "$ONIX_NODE_CONFIG_DIR/registration-info.txt"
-    onix_offer_legacy_registration
+    if [[ $1 ]]; then
+        echo "${GREEN}................Registering the adapter in the network registry................${NC}"
+        if api_key=$(onix_legacy_registry_login "$1" "$USERNAME" "$PASSWORD"); then
+            onix_register_network_participants 0 "$api_key" "$1"
+        else
+            echo "${RED}Could not log in to the registry at $1; register the subscribers above manually.${NC}"
+        fi
+    else
+        onix_offer_legacy_registration
+    fi
 
     # The adapter image bundles all plugins, so nothing is built on the host.
     onix_start_node
     onix_print_next_steps
+}
+
+# Function to choose the host address the registry and gateway ports are
+# published on, and persist it in install/.env, which docker compose reads
+# for every compose file in this directory (so later restarts and option 7
+# updates keep the binding).
+configure_network_services_bind_address() {
+    local addr="127.0.0.1" env_file=".env"
+    echo "The registry and gateway publish ports 3030/3000 and 4030/4000. Production deployments put a"
+    echo "TLS-terminating reverse proxy in front of them and keep the raw ports off the internet."
+    if ! onix_prompt_yes_no "Publish the registry and gateway ports on 127.0.0.1 only (recommended when the reverse proxy runs on this host)?" Y; then
+        addr="0.0.0.0"
+        echo "${YELLOW}Make sure a firewall keeps ports 3000, 3030, 4000 and 4030 private.${NC}"
+    fi
+    if [ -f "$env_file" ] && grep -q '^BECKN_SERVICES_BIND_ADDRESS=' "$env_file"; then
+        sed "s|^BECKN_SERVICES_BIND_ADDRESS=.*|BECKN_SERVICES_BIND_ADDRESS=$addr|" "$env_file" >"$env_file.tmp" && mv "$env_file.tmp" "$env_file"
+    else
+        echo "BECKN_SERVICES_BIND_ADDRESS=$addr" >>"$env_file"
+    fi
+}
+
+# Function to confirm reconfiguring an existing registry/gateway container.
+# The container is removed so it is recreated with the new configuration; its
+# data volumes are kept.
+confirm_service_reinstall() {
+    local name=$1
+    command -v docker >/dev/null 2>&1 || return 0
+    if docker ps -a --format '{{.Names}}' | grep -qx "$name"; then
+        echo "${YELLOW}A '$name' container already exists. It will be recreated with the new configuration (its data volumes are kept).${NC}"
+        onix_prompt_yes_no "Continue?" N || return 1
+        docker rm -f "$name" >/dev/null
+    fi
+    return 0
+}
+
+# Function to install a Beckn Gateway for a registry and optionally subscribe it.
+# Usage: install_network_gateway registry_url gateway_url
+install_network_gateway() {
+    install_gateway "$1" "$2"
+    echo ""
+    echo "The gateway subscribes itself with the registry at $1, so that URL must already be reachable from this machine."
+    if onix_prompt_yes_no "Subscribe the gateway with the registry now?" N; then
+        bash scripts/register_gateway.sh
+        echo ""
+    else
+        echo "Subscribe it later with: cd install && bash scripts/register_gateway.sh"
+    fi
+}
+
+# Function to join an existing network as a Beckn Gateway (legacy gateway service)
+join_network_as_gateway() {
+    local net_registry_url net_gateway_url
+    echo "${GREEN}................Installing a Beckn Gateway for an existing network................${NC}"
+    onix_prompt_url net_registry_url "Registry URL of the network (e.g. https://registry.example.com)"
+    onix_prompt_url net_gateway_url "Public URL of this gateway (e.g. https://gateway.example.com)"
+    confirm_service_reinstall gateway || { restart_script; return; }
+    install_package
+    configure_network_services_bind_address
+    install_network_gateway "$net_registry_url" "$net_gateway_url"
+    echo "Point your reverse proxy for $net_gateway_url at http://127.0.0.1:4030 and ask the registry operator to approve the gateway."
+}
+
+# Function to print what the operator must do after creating a production network.
+print_production_network_next_steps() {
+    local net_registry_url=$1 net_gateway_url=$2
+    echo ""
+    echo "${BLUE}Next steps for the production network${NC}"
+    echo "1. DNS and TLS: point the public names at this machine and terminate TLS in a reverse proxy"
+    echo "   (nginx, Caddy, a cloud load balancer) that forwards:"
+    [[ -n "$net_registry_url" ]] && echo "     $net_registry_url -> http://127.0.0.1:3030"
+    [[ -n "$net_gateway_url" ]] && echo "     $net_gateway_url -> http://127.0.0.1:4030"
+    echo "   Ports 3000 and 4000 are not needed behind the proxy; keep them private."
+    if [[ -n "$net_registry_url" ]]; then
+        echo "2. Change the default registry administrator password (user '$USERNAME') at $net_registry_url/login"
+        echo "   before you invite participants${net_gateway_url:+; do the same for the gateway at $net_gateway_url/login}."
+        echo "3. Participants join with option 1, using $net_registry_url/subscribers as the registry URL."
+    fi
+}
+
+# Function to create a new production network (Option 2): a self-hosted
+# registry and gateway, optionally with this machine's ONIX adapter as the
+# network's first participant, or guidance for a Beckn One network.
+create_production_network() {
+    local choice components net_registry_url="" net_gateway_url="" with_gateway=0 with_adapter=0
+    local adapter_search_url=""
+    echo "${GREEN}................Creating a new production network................${NC}"
+    echo "A network needs a registry that participants register with; Beckn 1.x networks also use a"
+    echo "gateway to broadcast search requests."
+    echo -e "\nWhere will the network's registry live?"
+    echo "1. Self-hosted Beckn registry (and gateway) on this machine"
+    echo "2. Beckn One (hosted DeDi registry)"
+    onix_prompt_choice choice "Enter your choice" 2
+    if [[ $choice -eq 2 ]]; then
+        echo ""
+        echo "Beckn One networks are created and their participants approved through Beckn One itself"
+        echo "(see https://docs.beckn.io/creating-an-open-network/setting-up-the-network-environment);"
+        echo "there is no registry or gateway to install. Once the network exists, every participant"
+        echo "runs an ONIX adapter that joins it with the network ID (option 1)."
+        if onix_prompt_yes_no "Set up an ONIX adapter for that network on this machine now?" Y; then
+            join_existing_network
+        fi
+        return
+    fi
+
+    echo -e "\nWhich components should run on this machine?"
+    echo "1. Registry and gateway"
+    echo "2. Registry only (no gateway, or a gateway hosted elsewhere)"
+    echo "3. Gateway only (for an existing registry)"
+    onix_prompt_choice components "Enter your choice" 3
+    case $components in
+    1) with_gateway=1 ;;
+    2) ;;
+    3)
+        join_network_as_gateway
+        return
+        ;;
+    esac
+
+    onix_prompt_url net_registry_url "Public URL of the registry (e.g. https://registry.example.com)"
+    if ((with_gateway)); then
+        onix_prompt_url net_gateway_url "Public URL of the gateway (e.g. https://gateway.example.com)"
+    fi
+    if [[ "$net_registry_url" == http://* || "$net_gateway_url" == http://* ]]; then
+        echo "${YELLOW}Warning: production registries and gateways should be served over HTTPS.${NC}"
+    fi
+
+    onix_reset_state
+    echo ""
+    if onix_prompt_yes_no "Also run an ONIX adapter on this machine as the network's first participant?" N; then
+        with_adapter=1
+        onix_collect_role
+        if ! onix_confirm_config_replacement; then
+            restart_script
+            return
+        fi
+        # The adapter reaches the registry and gateway over the Docker network.
+        onix_init_network 0 "" ""
+        onix_use_legacy_registry 0 "http://registry:3030/subscribers" "$net_registry_url/subscribers"
+        ((with_gateway)) && adapter_search_url="http://gateway:4030/bg"
+        onix_collect_protocol 0 "$adapter_search_url"
+        onix_collect_public_base_url
+        if onix_has_bap; then onix_collect_participant 0 BAP; fi
+        if onix_has_bpp; then onix_collect_participant 0 BPP; fi
+        onix_collect_app_urls
+        onix_collect_runtime
+    fi
+
+    echo -e "\n${BLUE}Production network summary${NC}"
+    echo "  Registry : $net_registry_url (this machine, port 3030)"
+    ((with_gateway)) && echo "  Gateway  : $net_gateway_url (this machine, port 4030)"
+    ((with_adapter)) && onix_print_summary
+    echo ""
+    echo "The registry and gateway are configured for their public URLs; set up DNS and a TLS reverse"
+    echo "proxy for them (printed again at the end). Setup itself talks to them on this machine."
+    if ! onix_prompt_yes_no "Proceed with this setup?" Y; then
+        restart_script
+        return
+    fi
+    confirm_service_reinstall registry || { restart_script; return; }
+    if ((with_gateway)); then
+        confirm_service_reinstall gateway || { restart_script; return; }
+    fi
+
+    install_package
+    configure_network_services_bind_address
+    install_registry "$net_registry_url" "http://localhost:3030"
+    if ((with_gateway)); then
+        install_network_gateway "$net_registry_url" "$net_gateway_url"
+    fi
+    if ((with_adapter)); then
+        deploy_onix_node "http://localhost:3030/subscribers"
+    fi
+    print_production_network_next_steps "$net_registry_url" "$net_gateway_url"
 }
 
 # Function to join an existing network with an ONIX adapter (Option 1)
@@ -1018,7 +879,7 @@ join_existing_network() {
     onix_reset_state
     onix_collect_role with_gateway
     if onix_role_is GATEWAY; then
-        completeSetup "Gateway"
+        join_network_as_gateway
         return
     fi
     if ! onix_confirm_config_replacement; then
@@ -1063,6 +924,8 @@ fi
 
 if [[ $choice -eq 1 ]]; then
     join_existing_network
+elif [[ $choice -eq 2 ]]; then
+    create_production_network
 elif [[ $choice -eq 3 ]]; then
     echo "${GREEN}Setting up network with Beckn One${NC}"
     echo "${BLUE}This setup uses Beckn One (DeDI-Registry) for registry and catalog discovery${NC}"
@@ -1085,29 +948,6 @@ elif [[ $choice -eq 6 ]]; then
     restart_script
 elif [[ $choice -eq 7 ]]; then
     update_network
-else
-    # Determine the platforms available based on the initial choice
-    platforms=("Registry" "Gateway" "BAP" "BPP" "ALL")
-
-    echo "Great choice! Get ready."
-    echo -e "\nWhich platform would you like to set up?"
-    for i in "${!platforms[@]}"; do
-        echo "$((i + 1)). ${platforms[$i]}"
-    done
-
-    read -p "Enter your choice: " platform_choice
-    validate_input "$platform_choice" "${#platforms[@]}"
-    if [[ $? -ne 0 ]]; then
-        restart_script # Restart the script if input is invalid
-    fi
-
-    selected_platform="${platforms[$((platform_choice - 1))]}"
-
-    if [[ -n $selected_platform ]]; then
-        completeSetup "$selected_platform"
-    else
-        restart_script
-    fi
 fi
 
 echo "Process complete. Thank you for using Beckn-ONIX!"

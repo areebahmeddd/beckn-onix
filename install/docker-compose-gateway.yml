@@ -6,8 +6,8 @@ services:
     networks:
       - beckn_network
     ports:
-      - 4000:4000
-      - 4030:4030
+      - "${BECKN_SERVICES_BIND_ADDRESS:-0.0.0.0}:4000:4000"
+      - "${BECKN_SERVICES_BIND_ADDRESS:-0.0.0.0}:4030:4030"
     restart: unless-stopped
     volumes:
       - gateway_data_volume:/gateway/overrideProperties/config
