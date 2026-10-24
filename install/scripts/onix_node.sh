@@ -366,8 +366,8 @@ onix_collect_protocol() {
     onix_net_search_url[i]=$search_url
 }
 
-# onix_collect_network_name VAR INDEX - a short, unique network name; it
-# prefixes the module paths (/<name>/bap/receiver/) and names the modules.
+# onix_collect_network_name VAR INDEX: the name prefixes module paths and
+# names, so it must be unique.
 onix_collect_network_name() {
     local __var=$1 __i=$2 __name __j __taken
     while true; do

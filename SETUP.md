@@ -186,7 +186,7 @@ cd install
 | 2. Create new production network | Installs a self-hosted registry (and gateway), optionally with an ONIX adapter as the first participant, or points you to Beckn One |
 | 3. Local network with Beckn One | Local BAP + BPP adapters and sandboxes using the Beckn One DeDi registry |
 | 4. Local network with local registry and gateway | Local registry, gateway, adapter and sandbox |
-| 5. Merge multiple networks | Configures and starts one ONIX adapter that participates in several networks — see below |
+| 5. Merge multiple networks | Configures and starts one ONIX adapter that takes part in several networks |
 | 6. Configure existing network | Not available in this distribution |
 | 7. Update/Upgrade application | Pulls the latest registry, gateway or protocol-server images and recreates those containers |
 
@@ -247,16 +247,18 @@ Before the proxy makes them public, change the default `root` password of the re
 
 #### Merging multiple networks (option 5)
 
-One adapter can take part in several networks, the way [2.2](#22-running-multiple-handlers-on-one-instance) runs several handlers on one instance. Option 5 asks the option 1 questions once per network (at least two), under a short network name, and generates a separate set of modules for each network under `/<name>/`:
+One adapter can take part in several networks, much like [2.2](#22-running-multiple-handlers-on-one-instance). Option 5 asks the option 1 questions for each network (at least two) under a short name, and generates a separate set of modules per network under `/<name>/`:
 
 ```text
 /retail/bap/caller/     /retail/bap/receiver/      → registry, keys and routing of network "retail"
 /mobility/bap/caller/   /mobility/bap/receiver/    → registry, keys and routing of network "mobility"
 ```
 
-Each network has its own registry plugin (a `/lookup` registry or the DeDi registry), subscriber IDs and URLs (URLs default to `<base>/<name>/bap/receiver`), keys (new, existing, or reused from the first network), protocol version and domain, and routing files (`routing-<module>-<name>.yaml`). Role, public base URL, application URLs and Redis are shared. `registration-info.txt` lists what to register in each network.
+- Per network: registry plugin, subscriber IDs and URLs (default `<base>/<name>/bap/receiver`), keys (new, existing, or reused from the first network), protocol version, domain and routing files (`routing-<module>-<name>.yaml`).
+- Shared: role, public base URL, application URLs and Redis.
+- `registration-info.txt` lists what to register in each network.
 
-For several Beckn One networks that use the same subscriber ID, option 1 is enough: enter all network IDs, comma-separated, and the `dediregistry` plugin accepts participants from each of them (`allowedNetworkIDs`).
+Beckn One networks that share a subscriber ID do not need this: use option 1 with comma-separated network IDs (`allowedNetworkIDs`).
 
 ---
 

@@ -814,16 +814,12 @@ create_production_network() {
     print_production_network_next_steps "$net_registry_url" "$net_gateway_url"
 }
 
-# Function to set up one ONIX adapter that participates in several networks
-# (Option 5). Each network gets its own modules under /<name>/ with its own
-# registry, subscriber IDs, keys and routing rules.
+# Function to set up one ONIX adapter for several networks (Option 5)
 merge_networks() {
     local i=0 name
     echo "${GREEN}................Setting up one ONIX adapter for multiple networks................${NC}"
-    echo "Each network gets its own modules under /<network name>/bap|bpp/receiver|caller/, with its"
-    echo "own registry, subscriber IDs, keys and routing rules; one adapter and one port serve them all."
-    echo "${BLUE}For several Beckn One networks that share a subscriber ID, option 1 with comma-separated${NC}"
-    echo "${BLUE}network IDs is simpler: the DeDi registry plugin accepts all of them in one set of modules.${NC}"
+    echo "Each network gets its own modules under /<network name>/, with its own registry, subscriber IDs, keys and routing."
+    echo "${BLUE}For Beckn One networks that share a subscriber ID, option 1 with comma-separated network IDs is simpler.${NC}"
     onix_reset_state
     onix_collect_role
     if ! onix_confirm_config_replacement; then
