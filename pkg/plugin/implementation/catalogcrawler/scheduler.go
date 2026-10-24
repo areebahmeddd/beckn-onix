@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/beckn/catalog-core/pkg/catalog/crawlmanager"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // DefaultIndexInterval, DefaultCatalogInterval, and DefaultParkSweepInterval
@@ -165,41 +166,86 @@ func (s *Scheduler) loop(ctx context.Context, interval time.Duration, fn func(co
 	}()
 }
 
+// Every tick below starts a new root span (trace.WithNewRoot): each tick is
+// its own trace, not a child of whatever span Start's ctx happened to carry,
+// and never one ever-growing trace spanning the scheduler's lifetime.
+
 // parkSweepTick drives RequeueOrAbandonParked on its own independent
 // cadence -- Params.RequeueOrAbandonParked itself logs revived/abandoned
 // counts, so there's nothing further to log here beyond a transport-level
 // error.
 func (s *Scheduler) parkSweepTick(ctx context.Context) {
+	ctx, op := startOperation(ctx, opParkSweep, trace.WithNewRoot())
 	if err := s.params.RequeueOrAbandonParked(ctx, s.cfg.ParkOlderThan); err != nil {
 		s.log.ErrorContext(ctx, "catalogcrawler: park sweep failed", "error", err)
+		op.end(ctx, statusError, classifyError(err, errTypeSweepFailed), err)
+		return
 	}
+	op.end(ctx, statusSuccess, "", nil)
 }
 
+// pollTick runs one PollIndexes pass. Besides an outright failure, it
+// records a pass that succeeded only partially (some registry networks or
+// discovery sources failed and were skipped -- see markPartialFailure) as a
+// partial_failure, so a persistently broken network hiding behind healthy
+// ones still shows up in onix_plugin_errors_total.
 func (s *Scheduler) pollTick(ctx context.Context) {
-	if err := s.params.PollIndexes(ctx); err != nil {
+	ctx, op := startOperation(ctx, opPollTick, trace.WithNewRoot())
+	ctx, partial := withPartialFailureTracking(ctx)
+	err := s.params.PollIndexes(ctx)
+	if err != nil {
 		s.log.ErrorContext(ctx, "catalogcrawler: poll tick failed", "error", err)
 	}
+	op.endPoll(ctx, err, partial.Load())
 }
 
 // syncTick drains the queue: SyncNext until it reports nothing left to claim
 // (claimed=false, whether because the queue is empty or because ClaimNext
 // itself errored -- either way there is nothing more to usefully do this
 // tick, and erroring on every loop iteration would spin hot on a wedged
-// store instead of waiting for the next tick).
+// store instead of waiting for the next tick). The tick's span parents one
+// queue_claim span per SyncNext call.
 func (s *Scheduler) syncTick(ctx context.Context) {
+	ctx, span := tracer().Start(ctx, spanNamePrefix+opSyncTick, trace.WithNewRoot())
+	itemsClaimed := 0
+	defer func() {
+		span.SetAttributes(attrItemsClaimed.Int(itemsClaimed))
+		span.End()
+	}()
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		claimed, err := s.params.SyncNext(ctx)
-		if !claimed {
-			if err != nil {
-				s.log.ErrorContext(ctx, "catalogcrawler: claiming next queue item failed", "error", err)
-			}
+		if !s.syncNext(ctx) {
 			return
 		}
+		itemsClaimed++
 		// SyncNext already logs and records a per-catalog sync failure itself
 		// (see SyncNext's RecordFailure/Park/Reschedule handling); nothing
 		// further to do here beyond continuing to drain the queue.
 	}
+}
+
+// syncNext runs one SyncNext call under its own queue_claim span and reports
+// whether an item was claimed. The outcome is: success (claimed and synced),
+// empty (nothing left to claim -- the normal end of a drain, not a failure),
+// or error -- either the claim itself failing (claim_failed), or a claimed
+// item's sync failing, classified by catalog-core's fault taxonomy
+// (syncErrorType).
+func (s *Scheduler) syncNext(ctx context.Context) bool {
+	ctx, op := startOperation(ctx, opQueueClaim)
+	claimed, err := s.params.SyncNext(ctx)
+	op.span.SetAttributes(attrClaimed.Bool(claimed))
+	switch {
+	case !claimed && err != nil:
+		s.log.ErrorContext(ctx, "catalogcrawler: claiming next queue item failed", "error", err)
+		op.end(ctx, statusError, classifyError(err, errTypeClaimFailed), err)
+	case !claimed:
+		op.end(ctx, statusEmpty, "", nil)
+	case err != nil:
+		op.end(ctx, statusError, syncErrorType(err), err)
+	default:
+		op.end(ctx, statusSuccess, "", nil)
+	}
+	return claimed
 }

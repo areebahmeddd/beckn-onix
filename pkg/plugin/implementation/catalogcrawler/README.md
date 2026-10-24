@@ -70,9 +70,37 @@ A separate, independent sweep (`parkSweepIntervalSeconds`) periodically revisits
 
 Both states are visible via [`GET /crawl/status`](#get-crawlstatus)'s `parked`/`parkCount`/`abandoned`/`abandonedAt` fields — useful for exactly the kind of case that motivated this: a catalog failing signature verification against a registry key that turns out to be stale gets parked, retried a bounded number of times, and if the publisher never fixes it, surfaces as abandoned rather than silently retrying (or silently never retrying) forever with no visibility.
 
+## Observability
+
+Besides its structured logs (unchanged), the crawler emits OpenTelemetry spans and the shared plugin metrics from `pkg/telemetry`, through the global providers the [`otelsetup`](../otelsetup/OBSERVABILITY.md) plugin registers. Without `otelsetup` configured these are no-ops. See [instrumentation.go](instrumentation.go).
+
+**Spans** (instrumentation scope `beckn-onix`), one per operation, named `catalogcrawler.<operation>`:
+
+| Span | Parent | Span attributes |
+|---|---|---|
+| `catalogcrawler.poll_tick` | new root per tick | `status`, `error_type`; a `partial discovery failure` event when some networks/sources failed |
+| `catalogcrawler.registry_lookup` | the `poll_tick` / `on_demand_crawl` span | `network_id`, `providers_found`, `status`, `error_type` |
+| `catalogcrawler.sync_tick` | new root per tick | `items_claimed` |
+| `catalogcrawler.queue_claim` | `sync_tick` | `claimed`, `status`, `error_type` |
+| `catalogcrawler.park_sweep` | new root per tick | `status`, `error_type` |
+| `catalogcrawler.on_demand_crawl` | new root, **linked** to the triggering `/crawl/trigger` request's span | `run_id`, `network_ids`, `status`, `error_type` |
+
+Every scheduler tick is its own trace (never one trace spanning the crawler's lifetime). A failed operation's span has status `Error` and the error recorded on it.
+
+**Metrics:** each operation except `sync_tick` records `onix_plugin_execution_duration_seconds` (every outcome) and, when it failed, `onix_plugin_errors_total`, both labelled `plugin_id="catalogcrawler"`, `plugin_type="crawler"`, `operation`, `status`, plus `error_type` on errors. Network IDs, URLs and error messages are span-only — never metric labels.
+
+| `operation` | `status` values | `error_type` values (errors only) |
+|---|---|---|
+| `poll_tick`, `on_demand_crawl` | `success`, `partial_failure`, `error` | `partial_discovery` (some networks/sources failed, the pass carried on with the rest), `poll_failed`, `canceled`, `timeout` |
+| `registry_lookup` | `success`, `error` | `lookup_failed`, `canceled`, `timeout` |
+| `queue_claim` | `success`, `empty` (nothing to claim — not an error), `error` | `claim_failed`; for a claimed item whose sync failed, catalog-core's fault class (`signature`, `digest_mismatch`, `ssrf`, `oversize`, `decode`, `content_invalid`, `transient`, …), or `canceled`/`timeout` |
+| `park_sweep` | `success`, `error` | `sweep_failed`, `canceled`, `timeout` |
+
+`queue_claim` covers one `SyncNext` call: claiming the next queued item *and* syncing it. A `partial_failure` poll tick is the signal for a broken network hiding behind healthy ones — e.g. `sum by (error_type) (rate(onix_plugin_errors_total{plugin_id="catalogcrawler", operation="poll_tick"}[15m]))`. Note that the shared histogram's largest bucket is 1 s, so long poll ticks / syncs all land in `+Inf`; use `_sum / _count` for their mean duration.
+
 ## On-demand crawl
 
-`CrawlRegistry(ctx, networkIDs)` triggers an immediate registry-backed discovery pass against caller-supplied `networkIDs`, independent of the configured `networks` default, without waiting for the next scheduled tick. Discovery goes through the configured `RegistryMetadataLookup` plugin instance, which owns its own registry URL — there is no per-call registry URL, so this cannot target a different registry than the one the deployment is configured with. It returns a run ID immediately; the run's outcome is only observable via logs and the queue, the same as a scheduled tick. The run is tied to the plugin's own lifecycle (not the caller's context), so it is not cut short by a request-scoped caller and is waited for on shutdown. It requires the crawler already be running (`Start` already called) — calling it on a freshly-constructed, unstarted instance returns an error.
+`CrawlRegistry(ctx, networkIDs)` triggers an immediate registry-backed discovery pass against caller-supplied `networkIDs`, independent of the configured `networks` default, without waiting for the next scheduled tick. Discovery goes through the configured `RegistryMetadataLookup` plugin instance, which owns its own registry URL — there is no per-call registry URL, so this cannot target a different registry than the one the deployment is configured with. It returns a run ID immediately; the run's outcome is only observable via logs, the queue, and its `catalogcrawler.on_demand_crawl` span/metrics (see [Observability](#observability)), the same as a scheduled tick. The run is tied to the plugin's own lifecycle (not the caller's context), so it is not cut short by a request-scoped caller and is waited for on shutdown. It requires the crawler already be running (`Start` already called) — calling it on a freshly-constructed, unstarted instance returns an error.
 
 ### The `/crawl/*` HTTP endpoint family
 

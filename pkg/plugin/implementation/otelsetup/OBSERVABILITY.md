@@ -257,6 +257,11 @@ At `SIGINT`/`SIGTERM`, the adapter calls the `otelsetup` closer, which flushes a
 | `plugin_id` | Plugin implementation ID as configured (e.g. `schemavalidator`) |
 | `plugin_type` | Plugin slot type (e.g. `schema_validator`, `router`, `cache`) |
 | `action` | Beckn action |
+| `operation` | Plugin-specific operation name (e.g. `poll_tick`, `registry_lookup`) |
+| `status` | Operation outcome (e.g. `success`, `error`, `partial_failure`) |
+| `error_type` | Low-cardinality failure class (`onix_plugin_errors_total` only) |
+
+**Catalog crawler (`plugin_id="catalogcrawler"`, `plugin_type="crawler"`)** records these per background operation — `poll_tick`, `registry_lookup`, `queue_claim`, `park_sweep`, `on_demand_crawl` — with `operation`/`status`/`error_type` labels. A poll tick where some networks or discovery sources failed but the tick carried on is recorded with `status="partial_failure"`, `error_type="partial_discovery"`. See the [catalogcrawler README](../catalogcrawler/README.md#observability) for the full value list.
 
 **Labels on `onix_plugin_info`:**
 
@@ -372,6 +377,22 @@ Each step executes as a child span of the request span. Step metrics (`onix_step
 | `redis_get` | Cache read |
 | `redis_set` | Cache write |
 | `redis_delete` | Cache delete |
+
+### Catalog crawler spans
+
+The `catalogcrawler` plugin runs in the background, outside any request, so each scheduler tick starts its **own root span** (one trace per tick):
+
+```
+[catalogcrawler.poll_tick]                 every indexIntervalSeconds
+  └── [catalogcrawler.registry_lookup]     one per configured network (attr network_id)
+[catalogcrawler.sync_tick]                 every catalogIntervalSeconds
+  └── [catalogcrawler.queue_claim]         one per claimed queue item, plus the final empty claim
+[catalogcrawler.park_sweep]                every parkSweepIntervalSeconds
+[catalogcrawler.on_demand_crawl]           per POST /crawl/trigger run; linked to the request span
+  └── [catalogcrawler.registry_lookup]
+```
+
+Failed operations set span status `Error` and record the error. See the [catalogcrawler README](../catalogcrawler/README.md#observability) for attributes.
 
 ### Trace context propagation
 
