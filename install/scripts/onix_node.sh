@@ -32,6 +32,8 @@ ONIX_NODE_REDIS_ADDR="redis-onix-node:6379"
 ONIX_NODE_REDIS_BPP_ADDR="redis-onix-node-bpp:6379"
 ONIX_NODE_HTTP_PORT=8081
 ONIX_DEDI_REGISTRY_URL="https://fabric.nfh.global/registry/dedi"
+# Fallback key generator image (see onix_generate_keys).
+ONIX_KEYGEN_IMAGE="golang:1.26-alpine"
 
 # ---------------------------------------------------------------------------
 # Input validation and prompt helpers
@@ -68,14 +70,34 @@ onix_is_v2() {
     [[ "$major" =~ ^[0-9]+$ ]] && ((major >= 2))
 }
 
-# onix_prompt VAR PROMPT [DEFAULT] - read a single line into VAR, falling back
-# to DEFAULT when the answer is empty.
+# onix_read VAR PROMPT [secret] - read one line into VAR. With "secret" the
+# answer is not echoed (private keys, passwords). The installer stops when the
+# input ends instead of re-prompting forever.
+onix_read() {
+    local __line
+    if [[ "${3:-}" == "secret" ]]; then
+        read -r -s -p "$2" __line || [[ -n "$__line" ]] || onix_input_ended
+        echo ""
+    else
+        read -r -p "$2" __line || [[ -n "$__line" ]] || onix_input_ended
+    fi
+    printf -v "$1" '%s' "$__line"
+}
+
+onix_input_ended() {
+    echo ""
+    echo "${RED}Input ended; stopping the installer.${NC}" >&2
+    exit 1
+}
+
+# onix_prompt VAR PROMPT [DEFAULT] [secret] - read a single line into VAR,
+# falling back to DEFAULT when the answer is empty.
 onix_prompt() {
     local __var=$1 __prompt=$2 __default=${3:-} __answer
     if [[ -n "$__default" ]]; then
-        read -r -p "$__prompt [$__default]: " __answer
+        onix_read __answer "$__prompt [$__default]: " "${4:-}"
     else
-        read -r -p "$__prompt: " __answer
+        onix_read __answer "$__prompt: " "${4:-}"
     fi
     # Trim surrounding whitespace.
     __answer="${__answer#"${__answer%%[![:space:]]*}"}"
@@ -116,13 +138,14 @@ onix_prompt_subscriber_id() {
     printf -v "$__var" '%s' "$__value"
 }
 
-# onix_prompt_key VAR PROMPT - prompt for a base64 key. A 64-byte Ed25519
-# private key (seed + public key, as written by the legacy protocol server) is
-# accepted and reduced to its 32-byte seed.
+# onix_prompt_key VAR PROMPT [secret] - prompt for a base64 key ("secret" for
+# private keys, which are then not echoed). A 64-byte Ed25519 private key (seed
+# + public key, as written by the legacy protocol server) is accepted and
+# reduced to its 32-byte seed.
 onix_prompt_key() {
-    local __var=$1 __prompt=$2 __value __seed
+    local __var=$1 __prompt=$2 __mode=${3:-} __value __seed
     while true; do
-        onix_prompt __value "$__prompt"
+        onix_prompt __value "$__prompt" "" "$__mode"
         if onix_is_key "$__value"; then
             break
         fi
@@ -144,9 +167,9 @@ onix_prompt_yes_no() {
     local __prompt=$1 __default=$2 __answer
     while true; do
         if [[ "$__default" == "Y" ]]; then
-            read -r -p "$__prompt [Y/n]: " __answer
+            onix_read __answer "$__prompt [Y/n]: "
         else
-            read -r -p "$__prompt [y/N]: " __answer
+            onix_read __answer "$__prompt [y/N]: "
         fi
         [[ -z "$__answer" ]] && __answer=$__default
         case "$__answer" in
@@ -306,6 +329,9 @@ onix_collect_network() {
             fi
             echo "${RED}Invalid network ID list. Use comma-separated IDs such as beckn.one/testnet.${NC}"
         done
+        if [[ -z "$ids" ]]; then
+            echo "${YELLOW}Warning: participants of every Beckn One network will be accepted; enter network IDs to restrict this.${NC}"
+        fi
         onix_net_network_ids[i]=$ids
         onix_net_registry_url[i]=""
         default_version="2.0.0"
@@ -380,14 +406,14 @@ onix_collect_participant() {
     2)
         mode="existing"
         while true; do
-            onix_prompt_key sp "Signing private key (base64 Ed25519 seed)"
+            onix_prompt_key sp "Signing private key (base64 Ed25519 seed; not shown)" secret
             onix_prompt_key spub "Signing public key (base64)"
             onix_key_pair_matches ed25519 "$sp" "$spub" && break
             echo "${RED}The signing public key does not belong to the signing private key. Enter both again.${NC}"
         done
         echo "${BLUE}Leave the encryption private key empty to generate a new X25519 pair.${NC}"
         while true; do
-            onix_prompt ep "Encryption private key (base64 X25519, optional)"
+            onix_prompt ep "Encryption private key (base64 X25519, optional; not shown)" "" secret
             [[ -z "$ep" ]] && break
             if ! onix_is_key "$ep"; then
                 echo "${RED}Invalid key. Expected a base64-encoded 32-byte key.${NC}"
@@ -447,7 +473,15 @@ onix_collect_app_urls() {
 # onix_collect_runtime - container image and port binding.
 onix_collect_runtime() {
     echo ""
-    onix_prompt onix_image "ONIX adapter Docker image" "$onix_image"
+    while true; do
+        onix_prompt onix_image "ONIX adapter Docker image" "$onix_image"
+        # Written unquoted to compose.env, so only image-reference characters.
+        if [[ "$onix_image" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]*$ ]]; then
+            break
+        fi
+        echo "${RED}Invalid image reference, e.g. fidedocker/onix-adapter or registry.example.com/onix:1.0.${NC}"
+        onix_image="fidedocker/onix-adapter"
+    done
     while true; do
         onix_prompt onix_host_port "Host port for the adapter" "$onix_host_port"
         if [[ "$onix_host_port" =~ ^[0-9]+$ ]] && ((onix_host_port >= 1 && onix_host_port <= 65535)); then
@@ -533,26 +567,32 @@ onix_parse_generated_keys() {
     onix_gen_encr_pub=$(printf '%s\n' "$1" | awk '/^encrPublicKey:/ {print $2}')
 }
 
+# onix_generated_keys_valid - succeeds when all four onix_gen_* keys are set.
+onix_generated_keys_valid() {
+    onix_is_key "$onix_gen_sign_priv" && onix_is_key "$onix_gen_sign_pub" &&
+        onix_is_key "$onix_gen_encr_priv" && onix_is_key "$onix_gen_encr_pub"
+}
+
 # onix_generate_keys - sets onix_gen_{sign,encr}_{priv,pub}. Tries OpenSSL,
 # then a local Go toolchain, then Go in a throwaway Docker container.
 onix_generate_keys() {
-    local out
     onix_gen_sign_priv="" onix_gen_sign_pub="" onix_gen_encr_priv="" onix_gen_encr_pub=""
-    if ! onix_generate_keys_openssl; then
-        if command -v go >/dev/null 2>&1; then
-            out=$(cd "$ONIX_REPO_DIR" && go run ./install/generate-ed25519-keys.go 2>/dev/null)
-        elif command -v docker >/dev/null 2>&1; then
-            echo "${YELLOW}OpenSSL with Ed25519/X25519 support and Go were not found; generating keys with the golang:1.26-alpine image.${NC}" >&2
-            out=$(docker run --rm -v "$ONIX_INSTALL_DIR/generate-ed25519-keys.go:/keygen/main.go:ro" -w /keygen golang:1.26-alpine go run main.go 2>/dev/null)
+    onix_generate_keys_openssl && return 0
+    if command -v go >/dev/null 2>&1; then
+        onix_parse_generated_keys "$(cd "$ONIX_REPO_DIR" && go run ./install/generate-ed25519-keys.go 2>/dev/null)"
+        onix_generated_keys_valid && return 0
+    fi
+    if command -v docker >/dev/null 2>&1; then
+        echo "${YELLOW}OpenSSL with Ed25519/X25519 support and a working Go toolchain were not found; generating keys with the $ONIX_KEYGEN_IMAGE image.${NC}" >&2
+        # Remember to remove the image afterwards (onix_resolve_all_keys) if it is pulled here.
+        if [[ -z "${onix_keygen_image_pulled:-}" ]] && ! docker image inspect "$ONIX_KEYGEN_IMAGE" >/dev/null 2>&1; then
+            onix_keygen_image_pulled=1
         fi
-        onix_parse_generated_keys "$out"
+        onix_parse_generated_keys "$(docker run --rm -v "$ONIX_INSTALL_DIR/generate-ed25519-keys.go:/keygen/main.go:ro" -w /keygen "$ONIX_KEYGEN_IMAGE" go run main.go 2>/dev/null)"
+        onix_generated_keys_valid && return 0
     fi
-    if ! onix_is_key "$onix_gen_sign_priv" || ! onix_is_key "$onix_gen_sign_pub" ||
-        ! onix_is_key "$onix_gen_encr_priv" || ! onix_is_key "$onix_gen_encr_pub"; then
-        echo "${RED}Error: could not generate keys. Install OpenSSL 1.1.1+ or Go, or enter existing keys.${NC}" >&2
-        return 1
-    fi
-    return 0
+    echo "${RED}Error: could not generate keys. Install OpenSSL 1.1.1+ or Go, or enter existing keys.${NC}" >&2
+    return 1
 }
 
 # onix_resolve_participant_keys INDEX ROLE - materialise the keys chosen in
@@ -598,11 +638,18 @@ onix_resolve_participant_keys() {
 # onix_resolve_all_keys - resolve keys for every participant of every network,
 # in network order so "reuse" can copy the keys of network 1.
 onix_resolve_all_keys() {
-    local i
+    local i rc=0
+    onix_keygen_image_pulled=""
     for ((i = 0; i < onix_net_count; i++)); do
-        if onix_has_bap; then onix_resolve_participant_keys "$i" BAP || return 1; fi
-        if onix_has_bpp; then onix_resolve_participant_keys "$i" BPP || return 1; fi
+        if onix_has_bap; then onix_resolve_participant_keys "$i" BAP || { rc=1 && break; }; fi
+        if onix_has_bpp; then onix_resolve_participant_keys "$i" BPP || { rc=1 && break; }; fi
     done
+    # Like the busybox helper image in update_registry_details, do not leave the
+    # key generation image behind.
+    if [[ -n "$onix_keygen_image_pulled" ]]; then
+        docker rmi "$ONIX_KEYGEN_IMAGE" >/dev/null 2>&1
+    fi
+    return $rc
 }
 
 # ---------------------------------------------------------------------------
@@ -1018,8 +1065,7 @@ onix_offer_legacy_registration() {
             continue
         fi
         onix_prompt user "Registry username"
-        read -r -s -p "Registry password: " password
-        echo ""
+        onix_read password "Registry password: " secret
         if ! api_key=$(onix_legacy_registry_login "${onix_net_registry_url[i]}" "$user" "$password"); then
             echo "${RED}Login to the registry failed. Register the subscribers manually using registration-info.txt.${NC}"
             continue
@@ -1040,9 +1086,13 @@ onix_compose() {
 
 # onix_start_node - start Redis and the adapter and wait for /health.
 onix_start_node() {
-    local attempt health_host=127.0.0.1
+    local attempt health_host=127.0.0.1 running
     echo "${GREEN}................Starting Redis and ONIX adapter................${NC}"
-    if ! onix_compose up -d; then
+    # The adapter reads adapter.yaml only at start-up, and "up -d" leaves a
+    # running container alone when only its mounted configuration changed, so
+    # restart an adapter that was already running (re-run of the installer).
+    running=$(docker ps -q --filter "name=^onix-node$" 2>/dev/null)
+    if ! onix_compose up -d || { [[ -n "$running" ]] && ! onix_compose restart onix-node; }; then
         echo "${RED}Error: failed to start the ONIX node containers.${NC}"
         return 1
     fi

@@ -187,16 +187,18 @@ cd install
 | 3. Local network with Beckn One | Local BAP + BPP adapters and sandboxes using the Beckn One DeDi registry |
 | 4. Local network with local registry and gateway | Local registry, gateway, adapter and sandbox |
 | 5. Merge multiple networks | Legacy registry-to-registry copy |
+| 6. Configure existing network | Not available in this distribution |
+| 7. Update/Upgrade application | Pulls the latest registry, gateway or protocol-server images and recreates those containers |
 
 #### Joining an existing network (option 1)
 
 The installer asks for:
 
 - **Role** — BAP, BPP, or both on one adapter.
-- **Registry** — either the Beckn One / DeDi registry (`dediregistry` plugin; its URL is a locked Beckn constant, so you only enter the network ID(s) to accept participants from, written as `allowedNetworkIDs`), or a registry exposing `/lookup` (`registry` plugin; enter the URL the adapter appends `/lookup` to, e.g. `https://registry.example.com/subscribers`).
+- **Registry** — either the Beckn One / DeDi registry (`dediregistry` plugin; its URL is a locked Beckn constant, so you only enter the network ID(s) to accept participants from, written as `allowedNetworkIDs`; leaving it empty accepts participants of every network), or a registry exposing `/lookup` (`registry` plugin; enter the URL the adapter appends `/lookup` to, e.g. `https://registry.example.com/subscribers`).
 - **Protocol version** (default `2.0.0` for DeDi, `1.1.0` otherwise), the **domain** for 1.x networks, and optionally the **gateway** (1.x `search`) or **discovery service** (2.x `discover`) URL used when a request carries no `bpp_uri`.
 - **Public base URL** of the adapter, from which the subscriber URLs are derived (`<base>/bap/receiver`, `<base>/bpp/receiver`), and the **subscriber ID** and **key ID** of each role.
-- **Keys** — generate new ones, or enter keys that are already registered (a 64-byte legacy protocol-server private key is accepted and reduced to its seed; mismatched public/private keys are rejected). Keys are generated with OpenSSL, falling back to `go run install/generate-ed25519-keys.go` or, failing that, a throwaway `golang` container.
+- **Keys** — generate new ones, or enter keys that are already registered (a 64-byte legacy protocol-server private key is accepted and reduced to its seed; mismatched public/private keys are rejected). Keys are generated with OpenSSL, falling back to `go run install/generate-ed25519-keys.go` or, failing that, a throwaway `golang` container (the image is removed again if the installer pulled it). Private keys you enter are not echoed.
 - **Application URLs** that receive inbound messages (the action is appended, e.g. `<url>/on_select`), the adapter **image** (default `fidedocker/onix-adapter`, which bundles all plugins; use your own image for custom plugins — see [section 3](#3-building-your-own-onix-image)) and the **host port**, published on `127.0.0.1` by default.
 
 It then writes `config/onix-node/` (git-ignored; an existing directory is only replaced after confirmation and is moved to a timestamped backup first):

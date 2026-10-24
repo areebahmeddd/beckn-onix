@@ -49,8 +49,6 @@ services:
       - beckn_network
     ports:
       - "${ONIX_BIND_ADDRESS:-127.0.0.1}:${ONIX_HOST_PORT:-8081}:8081"
-    environment:
-      REDIS_ADDR: redis-onix-node:6379
     volumes:
       - ../config:/app/config:ro
     command: ["./server", "--config=/app/config/onix-node/adapter.yaml"]
