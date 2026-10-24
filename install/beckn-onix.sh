@@ -1,6 +1,7 @@
 #!/bin/bash
 source scripts/variables.sh
 source scripts/get_container_details.sh
+source scripts/onix_node.sh
 
 # Function to start a specific service inside docker-compose file
 install_package() {
@@ -980,6 +981,68 @@ install_beckn_one_adapter() {
     echo "  - Sandbox BPP: http://localhost:3002"
     echo "  - Redis: localhost:6379"
 }
+
+# Function to set up an ONIX adapter node from the collected onix_* inputs:
+# generate keys, write config/onix-node/, print the registry registration
+# details and start the adapter with its own Redis.
+setup_onix_node() {
+    onix_print_summary
+    if ! onix_prompt_yes_no "Proceed with this setup?" Y; then
+        restart_script
+        return 1
+    fi
+
+    install_package
+
+    echo "${GREEN}................Preparing keys for ONIX adapter................${NC}"
+    if ! onix_resolve_all_keys; then
+        echo "${RED}ONIX node setup aborted: keys could not be prepared${NC}"
+        exit 1
+    fi
+    if ! onix_write_config; then
+        echo "${RED}ONIX node setup aborted: configuration was not written${NC}"
+        exit 1
+    fi
+
+    echo ""
+    cat "$ONIX_NODE_CONFIG_DIR/registration-info.txt"
+    onix_offer_legacy_registration
+
+    # The adapter image bundles all plugins, so nothing is built on the host.
+    onix_start_node
+    onix_print_next_steps
+}
+
+# Function to join an existing network with an ONIX adapter (Option 1)
+join_existing_network() {
+    echo "${GREEN}................Joining an existing network with an ONIX adapter................${NC}"
+    echo "This configures an ONIX adapter for an existing network's registry. Registering the node"
+    echo "with that registry happens outside this script; the details to register are printed at the end."
+    onix_reset_state
+    onix_collect_role with_gateway
+    if onix_role_is GATEWAY; then
+        completeSetup "Gateway"
+        return
+    fi
+    if ! onix_confirm_config_replacement; then
+        restart_script
+        return
+    fi
+
+    onix_collect_network 0 "" ""
+    onix_collect_public_base_url
+    if onix_has_bap; then onix_collect_participant 0 BAP; fi
+    if onix_has_bpp; then onix_collect_participant 0 BPP; fi
+    onix_collect_app_urls
+    onix_collect_runtime
+    setup_onix_node
+}
+
+# Allow the functions above to be sourced (e.g. by tests) without running the installer.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
+
 # MAIN SCRIPT STARTS HERE
 
 echo "Welcome to Beckn-ONIX!"
@@ -1001,7 +1064,9 @@ if [[ $? -ne 0 ]]; then
     restart_script # Restart the script if input is invalid
 fi
 
-if [[ $choice -eq 3 ]]; then
+if [[ $choice -eq 1 ]]; then
+    join_existing_network
+elif [[ $choice -eq 3 ]]; then
     echo "${GREEN}Setting up network with Beckn One${NC}"
     echo "${BLUE}This setup uses Beckn One (DeDI-Registry) for registry and catalog discovery${NC}"
     echo ""
@@ -1025,8 +1090,7 @@ elif [[ $choice -eq 7 ]]; then
     update_network
 else
     # Determine the platforms available based on the initial choice
-    platforms=("Gateway" "BAP" "BPP" "ALL")
-    [ "$choice" -eq 2 ] && platforms=("Registry" "${platforms[@]}") # Add Registry for new network setups
+    platforms=("Registry" "Gateway" "BAP" "BPP" "ALL")
 
     echo "Great choice! Get ready."
     echo -e "\nWhich platform would you like to set up?"
