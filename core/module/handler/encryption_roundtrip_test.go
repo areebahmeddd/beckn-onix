@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -114,7 +115,9 @@ func TestEncryption_RoundTrip_BAPToBPP(t *testing.T) {
 		callerEncrypts     bool
 		receiverDecrypts   bool
 		tamper             bool
+		registryErr        error
 		wantStatus         int
+		wantNoWire         bool
 		wantWireEncrypted  bool
 		wantBackendReached bool
 	}{
@@ -143,11 +146,24 @@ func TestEncryption_RoundTrip_BAPToBPP(t *testing.T) {
 			bppPublishesKey: true, callerEncrypts: true, receiverDecrypts: true, tamper: true,
 			wantStatus: http.StatusUnauthorized, wantWireEncrypted: true, wantBackendReached: false,
 		},
+		{
+			name:            "registry cannot name the recipient's key (dediregistry without key id): sent in plaintext",
+			bppPublishesKey: true, callerEncrypts: true, receiverDecrypts: true,
+			registryErr: model.NewSignValidationErr("AUT_SIGNATURE_INVALID", errors.New("key_id is required for DeDi lookup")),
+			wantStatus:  http.StatusOK, wantWireEncrypted: false, wantBackendReached: true,
+		},
+		{
+			name:            "registry outage: fails closed before anything is sent",
+			bppPublishesKey: true, callerEncrypts: true, receiverDecrypts: true,
+			registryErr: model.NewCodedErr(http.StatusServiceUnavailable, "NET_DOWNSTREAM_UNAVAILABLE", errors.New("registry down")),
+			wantStatus:  http.StatusServiceUnavailable, wantNoWire: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			n := newEncTestNetwork(t, tt.bppPublishesKey)
+			n.registry.err = tt.registryErr // encTestKM reads records directly, so validateSign is unaffected
 			sgn, _, err := signer.New(ctx, &signer.Config{})
 			if err != nil {
 				t.Fatalf("signer.New: %v", err)
@@ -235,6 +251,12 @@ func TestEncryption_RoundTrip_BAPToBPP(t *testing.T) {
 			}
 
 			wire, wireCalls := wireSeen.get()
+			if tt.wantNoWire {
+				if wireCalls != 0 {
+					t.Fatalf("nothing may be sent, got %s", wire)
+				}
+				return
+			}
 			if wireCalls != 1 {
 				t.Fatalf("expected exactly one request on the wire, got %d", wireCalls)
 			}

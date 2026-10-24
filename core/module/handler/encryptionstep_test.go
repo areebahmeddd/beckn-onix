@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -538,58 +539,92 @@ func TestEncryptStep_Run_Errors(t *testing.T) {
 	}
 }
 
-func TestEncryptStep_Run_RegistryErrorFailsClosed(t *testing.T) {
-	n := newEncTestNetwork(t, true)
-	n.registry.err = model.NewCodedErr(http.StatusServiceUnavailable, "NET_DOWNSTREAM_UNAVAILABLE", errors.New("registry down"))
-	step, _ := newEncryptStep(stubEncrypter{err: errors.New("must not be called")}, n.bapKM, n.registry, nil)
-	ctx := encTestStepCtx(model.RoleBAP, encTestBAP, encTestBody)
-	err := step.Run(ctx)
-	// The registry's own 5xx classification is preserved.
-	assertCoded(t, err, http.StatusServiceUnavailable, "NET_DOWNSTREAM_UNAVAILABLE")
-	if string(ctx.Body) != encTestBody {
-		t.Error("body must not be sent in plaintext form after a failed lookup")
-	}
-}
-
-// A 4xx from the registry or encrypter describes the recipient's record or a
-// key, not the caller's request, so it must surface as an unclassified 500
-// rather than e.g. a 401 telling the application its own request is unsigned.
-func TestEncryptStep_Run_ClientErrorsFromDependenciesAreNotForwarded(t *testing.T) {
+// A registry that cannot be reached fails the request instead of silently
+// downgrading to plaintext; its own 5xx classification is preserved.
+func TestEncryptStep_Run_RegistryOutageFailsClosed(t *testing.T) {
 	tests := []struct {
-		name    string
-		regErr  error
-		enc     definition.Encrypter
-		wantMsg string
+		name       string
+		err        error
+		wantStatus int // 0: unclassified (500)
+		wantCode   string
 	}{
-		{
-			name:    "registry rejects lookup without key id",
-			regErr:  model.NewSignValidationErr("AUT_SIGNATURE_INVALID", errors.New("key_id is required for DeDi lookup")),
-			enc:     stubEncrypter{err: errors.New("must not be called")},
-			wantMsg: "key_id is required",
-		},
-		{
-			name:    "recipient published an invalid key",
-			enc:     stubEncrypter{err: model.NewBadReqErr("AUT_SIGNATURE_INVALID", errors.New("invalid public key"))},
-			wantMsg: "invalid public key",
-		},
+		{name: "registry unavailable", err: model.NewCodedErr(http.StatusServiceUnavailable, "NET_DOWNSTREAM_UNAVAILABLE", errors.New("registry down")), wantStatus: http.StatusServiceUnavailable, wantCode: "NET_DOWNSTREAM_UNAVAILABLE"},
+		{name: "registry timeout", err: model.NewCodedErr(http.StatusGatewayTimeout, "NET_TIMEOUT", errors.New("timed out")), wantStatus: http.StatusGatewayTimeout, wantCode: "NET_TIMEOUT"},
+		{name: "bad upstream response", err: model.NewCodedErr(http.StatusBadGateway, "NET_DOWNSTREAM_INVALID_RESPONSE", errors.New("not JSON")), wantStatus: http.StatusBadGateway},
+		{name: "unclassified error (legacy registry plugin)", err: errors.New("lookup request failed with status: 404 Not Found")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			n := newEncTestNetwork(t, true)
-			n.registry.err = tt.regErr
-			step, _ := newEncryptStep(tt.enc, n.bapKM, n.registry, nil)
-			err := step.Run(encTestStepCtx(model.RoleBAP, encTestBAP, encTestBody))
+			n.registry.err = tt.err
+			step, _ := newEncryptStep(stubEncrypter{err: errors.New("must not be called")}, n.bapKM, n.registry, nil)
+			ctx := encTestStepCtx(model.RoleBAP, encTestBAP, encTestBody)
+			err := step.Run(ctx)
 			if err == nil {
-				t.Fatal("expected an error")
+				t.Fatal("expected the request to fail closed")
 			}
-			var coded *model.CodedErr
-			if errors.As(err, &coded) {
-				t.Errorf("expected an unclassified (500) error, got %d %v", coded.HTTPStatus(), err)
+			if tt.wantStatus != 0 {
+				assertCoded(t, err, tt.wantStatus, tt.wantCode)
+			} else {
+				var coded *model.CodedErr
+				if errors.As(err, &coded) {
+					t.Errorf("expected an unclassified (500) error, got %v", err)
+				}
 			}
-			if !strings.Contains(err.Error(), tt.wantMsg) {
-				t.Errorf("err = %v, want it to mention %q", err, tt.wantMsg)
+			if string(ctx.Body) != encTestBody {
+				t.Error("body must not be sent in plaintext form after a failed lookup")
 			}
 		})
+	}
+}
+
+// A 4xx from the registry is its answer about the recipient (not found, key
+// id required, ...): no usable key is known, so the message goes out in
+// plaintext, exactly as for a recipient without encr_public_key.
+func TestEncryptStep_Run_NoDiscoverableKeySendsPlaintext(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "dediregistry needs a key id", err: model.NewSignValidationErr("AUT_SIGNATURE_INVALID", errors.New("key_id is required for DeDi lookup"))},
+		{name: "subscriber not found", err: model.NewSignValidationErr("AUT_SUBSCRIBER_NOT_FOUND", errors.New("DeDi record lookup request failed with status: 404 Not Found"))},
+		{name: "network not allowed", err: model.NewSignValidationErr("AUT_NETWORK_NOT_ALLOWED", errors.New("not a member"))},
+		{name: "bad request", err: model.NewBadReqErr("", errors.New("bad lookup"))},
+		{name: "wrapped", err: fmt.Errorf("lookup: %w", model.NewCodedErr(http.StatusNotFound, "NET_ENTITY_NOT_FOUND", errors.New("gone")))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			n := newEncTestNetwork(t, true)
+			n.registry.err = tt.err
+			step, _ := newEncryptStep(stubEncrypter{err: errors.New("must not be called")}, n.bapKM, n.registry, nil)
+			ctx := encTestStepCtx(model.RoleBAP, encTestBAP, encTestBody)
+			if err := step.Run(ctx); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if string(ctx.Body) != encTestBody {
+				t.Errorf("body must go out unchanged:\nwant %s\n got %s", encTestBody, ctx.Body)
+			}
+		})
+	}
+}
+
+// A 4xx from the encrypter plugin describes a key, not the caller's request,
+// so it must surface as an unclassified 500 rather than e.g. a 400 telling the
+// application its own request is malformed.
+func TestEncryptStep_Run_EncrypterClientErrorIsNotForwarded(t *testing.T) {
+	n := newEncTestNetwork(t, true)
+	enc := stubEncrypter{err: model.NewBadReqErr("AUT_SIGNATURE_INVALID", errors.New("invalid public key"))}
+	step, _ := newEncryptStep(enc, n.bapKM, n.registry, nil)
+	err := step.Run(encTestStepCtx(model.RoleBAP, encTestBAP, encTestBody))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var coded *model.CodedErr
+	if errors.As(err, &coded) {
+		t.Errorf("expected an unclassified (500) error, got %d %v", coded.HTTPStatus(), err)
+	}
+	if !strings.Contains(err.Error(), "invalid public key") {
+		t.Errorf("err = %v, want it to mention the cause", err)
 	}
 }
 

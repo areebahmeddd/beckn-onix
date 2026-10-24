@@ -19,9 +19,10 @@ import (
 // modules) are opt-in: they only exist in a pipeline when they are listed in
 // the handler's steps, which in turn requires the encrypter / decrypter
 // plugins to be configured. Encryption is further gated per message on the
-// counterparty: the encrypt step only encrypts when the recipient has
-// published an encryption public key (encr_public_key) in the registry, and
-// the decrypt step only acts on payloads that carry the encrypted envelope.
+// counterparty (opportunistic encryption): the encrypt step only encrypts
+// when the registry yields an encryption public key (encr_public_key) for the
+// recipient, and fails closed only when the registry cannot be reached; the
+// decrypt step only acts on payloads that carry the encrypted envelope.
 // Everything else passes through unchanged, so encrypting and non-encrypting
 // participants interoperate.
 //
@@ -218,10 +219,17 @@ func (s *encryptStep) Run(ctx *model.StepContext) error {
 
 	recipient, err := s.lookupRecipient(ctx, recipientID, s.recipientKeyHint(ctx, reqContext, recipientID))
 	if err != nil {
-		// Fail closed: without the registry answer we cannot tell whether the
-		// recipient expects encryption, and silently downgrading to plaintext
-		// would defeat its opt-in.
-		return encryptFailure(fmt.Sprintf("encrypt: failed to look up encryption key for recipient %s", recipientID), err)
+		if isClientCodedErr(err) {
+			// The registry answered, but not with a usable key (e.g. not
+			// found, or dediregistry needs a key id we don't know).
+			// Encryption is opportunistic, so this is the same as a recipient
+			// without a published key.
+			log.Warnf(ctx, "encrypt: no encryption key could be determined for recipient %s, sending unencrypted: %v", recipientID, err)
+			return nil
+		}
+		// Fail closed on an outage: the recipient may have published a key,
+		// and silently downgrading to plaintext would defeat its opt-in.
+		return fmt.Errorf("encrypt: failed to look up encryption key for recipient %s: %w", recipientID, err)
 	}
 	if recipient == nil {
 		log.Debugf(ctx, "encrypt: recipient %s has not published an encryption public key; sending unencrypted", recipientID)
@@ -269,16 +277,27 @@ func (s *encryptStep) Run(ctx *model.StepContext) error {
 	return nil
 }
 
-// encryptFailure wraps an error from the registry or the encrypter plugin.
-// Their 4xx classifications describe the recipient's registry record or a
-// key, not the request being sent (dediregistry, for example, reports a
-// lookup without a key id as AUT_SIGNATURE_INVALID), so returning them would
-// tell the calling application its own request is malformed or unauthorised.
-// Such errors are reported unclassified (500, full detail in the log); 5xx
-// classifications, e.g. registry unavailable, are kept.
-func encryptFailure(msg string, err error) error {
+// isClientCodedErr reports whether err carries a 4xx *model.CodedErr.
+//
+// For a registry lookup this separates the registry's answer about the
+// looked-up subscriber from a failure to get an answer: registry plugins
+// classify the former as 4xx (dediregistry: AUT_SUBSCRIBER_NOT_FOUND for a
+// 404, AUT_SIGNATURE_INVALID for a missing key id, AUT_NETWORK_NOT_ALLOWED,
+// ...) and outages as 5xx (unreachable, timeout, bad upstream response,
+// cancelled). Unclassified errors, which is how the legacy registry plugin
+// reports every failure, count as outages.
+func isClientCodedErr(err error) bool {
 	var coded *model.CodedErr
-	if errors.As(err, &coded) && coded.HTTPStatus() < http.StatusInternalServerError {
+	return errors.As(err, &coded) && coded.HTTPStatus() < http.StatusInternalServerError
+}
+
+// encryptFailure wraps an error from the encrypter plugin. Its 4xx
+// classifications describe a key (the recipient's published one or our own),
+// not the request being sent, so returning them would tell the calling
+// application its own request is malformed. They are reported unclassified
+// (500, full detail in the log).
+func encryptFailure(msg string, err error) error {
+	if isClientCodedErr(err) {
 		return fmt.Errorf("%s: %v", msg, err)
 	}
 	return fmt.Errorf("%s: %w", msg, err)
