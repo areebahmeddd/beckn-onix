@@ -23,69 +23,43 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Subscribe publishes the adapter's subscriber record through the DeDi API
-// that the dedi.global publish portal uses. Where each call comes from:
-//
-//   - GET {subscribeURL}/lookup/{namespace}/{registry_name}/{record_name}:
-//     documented and public (security: []) in the DeDi protocol's OpenAPI,
-//     https://github.com/LF-Decentralized-Trust-labs/decentralized-directory-protocol/blob/main/api/openapi.yaml
-//   - POST {subscribeURL}/{namespace}/{registry_name}/save-record-as-draft?publish=true
-//     with {record_name, description, details}: not in that OpenAPI. It is
-//     the call the publish portal (https://publish.dedi.global) makes for
-//     "Publish record".
-//   - POST {subscribeURL}/{namespace}/{registry_name}/{record_name}/update-record
-//     with {description, details[, meta]}: same source, the portal's
-//     "Update record".
-//
-// Writes authenticate with "Authorization: Bearer <API key>", the OpenAPI's
-// BearerAuth scheme. API keys are generated in the portal; without one
-// api.dedi.global answers 402 Payment Required. Because the two write
-// endpoints are undocumented, a response body is never parsed: the record is
-// read back through the documented lookup instead.
+// The create and update endpoints are not in DeDi's published OpenAPI; they are
+// the calls the publish portal (https://publish.dedi.global) makes. Their
+// response bodies are never parsed: the record is read back through the
+// documented lookup instead.
 const (
 	subscribeCreateURLFmt = "%s/%s/%s/save-record-as-draft?publish=true"
 	subscribeUpdateURLFmt = "%s/%s/%s/%s/update-record"
 	subscribeLookupURLFmt = "%s/lookup/%s/%s/%s"
 )
 
-// APIKeyEnv names the environment variable that holds the DeDi API key used to
-// write the subscriber record. Like REDIS_PASSWORD and RABBITMQ_PASSWORD, the
-// secret is kept out of the YAML config.
+// APIKeyEnv is the environment variable holding the DeDi API key for writes,
+// kept out of YAML like REDIS_PASSWORD.
 const APIKeyEnv = "DEDI_API_KEY"
 
-// SubscribeConfig holds where and how Subscribe writes the subscriber record.
-// The record's identity (subscriber ID, callback URL, type, keys) comes from
-// the Subscribe call itself.
+// SubscribeConfig says where Subscribe writes the subscriber record.
 type SubscribeConfig struct {
-	// URL is the DeDi API base URL including the /dedi path, e.g.
-	// https://api.dedi.global/dedi. This is the API that owns the record,
-	// not the read-only lookup cache in Config.URL.
-	URL string `yaml:"url" json:"url"`
-	// Namespace is the verified DeDi namespace (domain) that holds the registry.
-	Namespace string `yaml:"namespace" json:"namespace"`
-	// RegistryName is a registry in Namespace that uses the Beckn Subscriber schema.
-	RegistryName string `yaml:"registryName" json:"registryName"`
-	// RecordName is the record's name, unique within the registry. Use one
-	// record per role.
-	RecordName string `yaml:"recordName" json:"recordName"`
-	// Countries is details.countries: ISO 3166-1 alpha-3 codes. The Beckn
-	// Subscriber schema requires at least one.
-	Countries []string `yaml:"countries" json:"countries"`
-	// Description is the record description. When empty, an existing record
-	// keeps its own and a new record gets a generated one.
+	// URL is the DeDi API base URL including /dedi, not the read-only lookup
+	// cache in Config.URL.
+	URL          string   `yaml:"url" json:"url"`
+	Namespace    string   `yaml:"namespace" json:"namespace"`
+	RegistryName string   `yaml:"registryName" json:"registryName"`
+	RecordName   string   `yaml:"recordName" json:"recordName"`
+	Countries    []string `yaml:"countries" json:"countries"`
+	// Description, when empty, keeps an existing record's description and
+	// generates one for a new record.
 	Description string `yaml:"description" json:"description"`
-	// APIKey is the bearer token for the DeDi write API. Never logged.
-	APIKey string `yaml:"-" json:"-"`
+	APIKey      string `yaml:"-" json:"-"`
 }
 
-// String renders the config for logs without the API key.
+// String omits the API key so the config is safe to log.
 func (s SubscribeConfig) String() string {
 	return fmt.Sprintf("{URL:%s Namespace:%s RegistryName:%s RecordName:%s Countries:%v Description:%q APIKeySet:%t}",
 		s.URL, s.Namespace, s.RegistryName, s.RecordName, s.Countries, s.Description, s.APIKey != "")
 }
 
-// validateSubscribe checks a subscribe configuration at startup, so a
-// misconfiguration fails the plugin load instead of the first Subscribe.
+// validateSubscribe fails the plugin load on a misconfiguration rather than
+// the first Subscribe.
 func validateSubscribe(s *SubscribeConfig) error {
 	if err := validateBaseURL("subscribeURL", s.URL); err != nil {
 		return err
@@ -111,27 +85,19 @@ func validateSubscribe(s *SubscribeConfig) error {
 	return nil
 }
 
-// Compile-time check that DeDiRegistryClient implements RegistrySubscriber.
 var _ definition.RegistrySubscriber = (*DeDiRegistryClient)(nil)
 
-// errSubscriberRecordNotFound marks a 404 from the subscriber record lookup,
-// which Subscribe answers by creating the record.
+// errSubscriberRecordNotFound marks a lookup 404, which Subscribe answers by
+// creating the record.
 var errSubscriberRecordNotFound = errors.New("DeDi subscriber record not found")
 
-// subscriberRecordNotFound classifies a 404 on the subscriber record lookup.
 func subscriberRecordNotFound(err error) *model.CodedErr {
 	return entityNotFound(fmt.Errorf("%w: %w", errSubscriberRecordNotFound, err))
 }
 
-// Subscribe implements definition.RegistrySubscriber. It looks the configured
-// record up and creates it when it is missing, updates it when its details
-// differ from req, and otherwise writes nothing. After a write it reads the
-// record back for its record_id and state; a failed read-back is logged, not
-// returned, since the write itself succeeded.
-//
-// Fields of an existing record that req does not set (other details keys,
-// meta, and the description unless one is configured) are sent back
-// unchanged, so an update cannot drop e.g. meta.catalog_index_urls.
+// Subscribe implements definition.RegistrySubscriber. An update sends back the
+// fields req does not manage (other details keys, meta, the description) so it
+// cannot drop e.g. meta.catalog_index_urls.
 func (c *DeDiRegistryClient) Subscribe(ctx context.Context, req *model.Subscription) (result *model.SubscribeResult, err error) {
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
 	ctx, span := tracer.Start(ctx, "registry subscribe")
@@ -210,10 +176,9 @@ func (c *DeDiRegistryClient) Subscribe(ctx context.Context, req *model.Subscript
 	return result, nil
 }
 
-// subscriberDetails builds the record's details object in the Beckn
-// Subscriber schema (schemas/beckn_subscriber.json in the DeDi protocol
-// repo). Values use the types encoding/json decodes into, so they compare
-// equal to a looked-up record's details with reflect.DeepEqual.
+// subscriberDetails builds the Beckn Subscriber details object. Values use the
+// types encoding/json decodes into, so reflect.DeepEqual against a looked-up
+// record works.
 func subscriberDetails(sc *SubscribeConfig, req *model.Subscription) map[string]any {
 	countries := make([]any, len(sc.Countries))
 	for i, c := range sc.Countries {
@@ -235,8 +200,8 @@ func subscriberDetails(sc *SubscribeConfig, req *model.Subscription) map[string]
 	return details
 }
 
-// subscribeDescription picks the record description: the configured one, else
-// the existing record's, else a generated one (the portal requires one).
+// subscribeDescription falls back to a generated description because the
+// portal requires one.
 func subscribeDescription(configured, existing string, req *model.Subscription) string {
 	switch {
 	case configured != "":
@@ -248,8 +213,8 @@ func subscribeDescription(configured, existing string, req *model.Subscription) 
 	}
 }
 
-// recordUpdate builds the update-record body for an existing record (its
-// lookup "data" object) and reports whether it differs from the record.
+// recordUpdate builds the update-record body for an existing record and
+// reports whether it differs from it.
 func recordUpdate(sc *SubscribeConfig, req *model.Subscription, existing map[string]any) (map[string]any, bool) {
 	existingDetails, _ := existing["details"].(map[string]any)
 	details := maps.Clone(existingDetails)
@@ -269,18 +234,15 @@ func recordUpdate(sc *SubscribeConfig, req *model.Subscription, existing map[str
 	return body, changed
 }
 
-// recordIdentity reads record_id and state from a record lookup's data object.
 func recordIdentity(data map[string]any) (recordID, state string) {
 	recordID, _ = data["record_id"].(string)
 	state, _ = data["state"].(string)
 	return recordID, state
 }
 
-// doPost sends payload as JSON to a DeDi write endpoint with the configured
-// API key, and accepts any 2xx. Failures are classified like doGet's, except
-// that the DeDi response text is kept in the error: Subscribe runs at
-// startup for the operator, never on a request path that could leak it to a
-// remote participant in a NACK.
+// doPost sends payload to a DeDi write endpoint and accepts any 2xx. Unlike
+// doGet it keeps DeDi's response text in errors: Subscribe runs at startup,
+// never on a request path where the text could leak into a NACK.
 func (c *DeDiRegistryClient) doPost(ctx context.Context, url, operation string, payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {

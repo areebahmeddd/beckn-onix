@@ -210,8 +210,7 @@ type Config struct {
 	RetryMax          int           `yaml:"retry_max" json:"retry_max"`
 	RetryWaitMin      time.Duration `yaml:"retry_wait_min" json:"retry_wait_min"`
 	RetryWaitMax      time.Duration `yaml:"retry_wait_max" json:"retry_wait_max"`
-	// Subscribe enables Subscribe (definition.RegistrySubscriber). Nil — the
-	// default — leaves the plugin lookup-only.
+	// Subscribe enables Subscribe; nil leaves the plugin lookup-only.
 	Subscribe *SubscribeConfig `yaml:"subscribe" json:"subscribe"`
 }
 

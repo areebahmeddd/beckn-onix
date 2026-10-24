@@ -114,8 +114,7 @@ func NewStdHandler(ctx context.Context, mgr PluginManager, cfg *Config, moduleNa
 	if err := h.initSteps(ctx, mgr, cfg); err != nil {
 		return nil, fmt.Errorf("failed to initialize steps: %w", err)
 	}
-	// Opt-in: publish this module's subscriber record once everything else
-	// has loaded, so a config error elsewhere fails before any registry write.
+	// Last, so a config error elsewhere fails before any registry write.
 	if err := subscribeToRegistry(ctx, h.registry, h.km, cfg); err != nil {
 		return nil, err
 	}

@@ -7,9 +7,8 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/model"
 )
 
-// ErrSubscribeNotConfigured is the sentinel a RegistrySubscriber returns (wrapped, checked
-// with errors.Is) when its own configuration does not say where to write the record. Callers
-// treat it as a configuration error rather than a registry outage.
+// ErrSubscribeNotConfigured is returned (wrapped) by a RegistrySubscriber whose own config
+// does not say where to write the record, so callers can treat it as a config error.
 var ErrSubscribeNotConfigured = errors.New("registry plugin is not configured to subscribe")
 
 // RegistryLookup resolves Beckn subscriber identities using generic Beckn protocol parameters.
@@ -49,17 +48,13 @@ type RegistryMetadataLookup interface {
 	QueryByNetwork(ctx context.Context, networkID string) ([]model.SubscriberRecord, error)
 }
 
-// RegistrySubscriber publishes this adapter's own subscriber record to a registry: it creates
-// the record when none exists, updates it when its details differ, and writes nothing when they
-// already match, so calling it on every startup is safe.
-// Like RegistryMetadataLookup it is an optional capability: callers discover it by type
-// assertion on the RegistryLookup a registry provider returns, so RegistryLookup
-// implementations that cannot subscribe are unaffected.
+// RegistrySubscriber is an optional capability of a RegistryLookup (found by type assertion)
+// that publishes this adapter's own subscriber record. It must be idempotent: callers run it
+// on every startup.
 type RegistrySubscriber interface {
-	// Subscribe publishes req's subscriber identity: req.SubscriberID, req.URL (the callback
-	// URL other participants send to), req.Type (e.g. "BAP", "BPP"), req.SigningPublicKey and,
-	// when set, req.EncrPublicKey and req.Domain. Where the record lives in the registry is
-	// the implementation's own configuration.
+	// Subscribe creates, updates or leaves alone the configured record.
+	// Input: req.SubscriberID, req.URL (callback), req.Type, req.SigningPublicKey and,
+	// when set, req.EncrPublicKey and req.Domain.
 	Subscribe(ctx context.Context, req *model.Subscription) (*model.SubscribeResult, error)
 }
 

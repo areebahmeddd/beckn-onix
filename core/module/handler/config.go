@@ -198,28 +198,20 @@ type Config struct {
 	// status. Must stay false/unset for any network-facing deployment.
 	AuthDisabled bool `yaml:"authDisabled,omitempty"`
 	// Subscribe, when set, publishes this module's subscriber record to the
-	// registry plugin at startup (see subscribeToRegistry). Unset by default,
-	// so existing configs never write to a registry.
+	// registry at startup.
 	Subscribe *SubscribeConfig `yaml:"subscribe,omitempty"`
 }
 
-// SubscribeConfig opts a std handler into publishing its subscriber record to
-// its registry plugin at startup. The subscriber ID comes from
-// Config.SubscriberID and the public keys from the key manager's keyset for
-// it; where the record is written is the registry plugin's own configuration.
+// SubscribeConfig opts a std handler into publishing its subscriber record at
+// startup. Where the record is written is the registry plugin's configuration.
 type SubscribeConfig struct {
-	// URL is the callback URL published for the subscriber: the receiver
-	// endpoint other participants send requests to.
+	// URL is the published callback URL (the receiver endpoint).
 	URL string `yaml:"url"`
-	// Type is the published participant type (e.g. "BAP", "BPP", "CDS").
-	// Defaults to the upper-cased role for the bap and bpp roles.
+	// Type defaults to the upper-cased role for bap and bpp.
 	Type string `yaml:"type,omitempty"`
-	// Required fails startup when subscribing fails. By default the failure
-	// is logged and the adapter starts anyway, so a registry outage cannot
-	// keep it down.
+	// Required fails startup when subscribing fails; otherwise it is logged.
 	Required bool `yaml:"required,omitempty"`
-	// Timeout bounds the whole subscribe call, retries included, so a slow
-	// or hung registry cannot hold up startup. Zero or negative means
-	// defaultSubscribeTimeout.
+	// Timeout bounds the whole call, retries included. Zero or negative
+	// means defaultSubscribeTimeout.
 	Timeout time.Duration `yaml:"timeout,omitempty"`
 }

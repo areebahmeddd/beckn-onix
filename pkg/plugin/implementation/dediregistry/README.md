@@ -6,7 +6,7 @@ A **registry type plugin** for Beckn-ONIX that integrates with DeDi (Decentraliz
 
 The DeDi Registry plugin implements the `RegistryLookup` interface to retrieve public keys and participant information from DeDi registry services. It's used by the KeyManager for **signature validation of incoming requests** from other network participants.
 
-It can also publish the adapter's own subscriber record to DeDi (`definition.RegistrySubscriber`). This is opt-in and off by default. See [Subscribing](#subscribing-publishing-this-adapters-record).
+It can also publish the adapter's own subscriber record to DeDi (opt-in, see [Subscribing](#subscribing)).
 
 
 
@@ -37,14 +37,14 @@ registry:
 | `retry_max` | No | Maximum number of retry attempts | 4 (library default) |
 | `retry_wait_min` | No | Minimum wait time between retries (e.g., "1s", "500ms") | 1s (library default) |
 | `retry_wait_max` | No | Maximum wait time between retries (e.g., "5s") | 30s (library default) |
-| `subscribeURL` | No | DeDi API base URL, including the `/dedi` path, that owns your record (e.g. `https://api.dedi.global/dedi`). This is not the read-only `url` cache. Setting it enables `Subscribe`, and the keys below are then required. Same URL checks as `url` | - (subscribe off) |
-| `subscribeNamespace` | With `subscribeURL` | Your verified DeDi namespace (domain) | - |
-| `subscribeRegistryName` | With `subscribeURL` | The registry in that namespace that uses the [Beckn Subscriber schema](https://raw.githubusercontent.com/LF-Decentralized-Trust-labs/decentralized-directory-protocol/refs/heads/main/schemas/beckn_subscriber.json) | - |
-| `subscribeRecordName` | With `subscribeURL` | Record name, unique in the registry. Use one record per role | - |
-| `subscribeCountries` | With `subscribeURL` | Comma-separated ISO 3166-1 alpha-3 codes for `details.countries` (the schema requires at least one) | - |
-| `subscribeDescription` | No | Record description | Existing record: keeps its description. New record: `Beckn subscriber record for <subscriber_id> (<type>)` |
+| `subscribeURL` | No | DeDi API base URL including `/dedi` (e.g. `https://api.dedi.global/dedi`), not the read-only `url`. Enables `Subscribe`; same URL checks as `url` | - (subscribe off) |
+| `subscribeNamespace` | With `subscribeURL` | Your verified DeDi namespace | - |
+| `subscribeRegistryName` | With `subscribeURL` | Registry in that namespace using the [Beckn Subscriber schema](https://raw.githubusercontent.com/LF-Decentralized-Trust-labs/decentralized-directory-protocol/refs/heads/main/schemas/beckn_subscriber.json) | - |
+| `subscribeRecordName` | With `subscribeURL` | Record name, unique in the registry (one per role) | - |
+| `subscribeCountries` | With `subscribeURL` | Comma-separated ISO 3166-1 alpha-3 codes (at least one) | - |
+| `subscribeDescription` | No | Record description | Existing record's, else `Beckn subscriber record for <subscriber_id> (<type>)` |
 
-With `subscribeURL` set, the plugin reads the DeDi API key from the **`DEDI_API_KEY`** environment variable. It is not a config key, so the secret stays out of YAML, as with `REDIS_PASSWORD`. If the variable is unset, the plugin fails to load. Setting any other `subscribe*` key without `subscribeURL` is also a load error.
+With `subscribeURL` set, the API key is read from the **`DEDI_API_KEY`** environment variable and the plugin fails to load without it. Other `subscribe*` keys without `subscribeURL` are also a load error.
 
 ## API Integration
 
@@ -108,53 +108,36 @@ GET {url}/query/{networkID}
 
 Only records with `state == "live"` are returned; a record whose `details` don't parse is skipped rather than failing the whole query. `allowedNetworkIDs` is **not** applied to this call — like `LookupNode`, this is a discovery read, not a trust decision. Results are not cached (unlike `Lookup`, which is on the hot request-signing path).
 
-## Subscribing (publishing this adapter's record)
+## Subscribing
 
-`Subscribe(ctx, *model.Subscription)` implements `definition.RegistrySubscriber`. It writes the adapter's own Beckn Subscriber record (`subscriber_id`, `url`, `type`, `signing_public_key`, `countries`, plus `encr_public_key`/`domain` when set) into `{subscribeNamespace}/{subscribeRegistryName}/{subscribeRecordName}`. The adapter calls it at startup when a std handler has a [`subscribe` block](../../../../CONFIG.md#subscribe). The subscriber ID and keys come from that module's `subscriberId` and key manager.
-
-### Flow (idempotent, safe on every restart)
+`Subscribe` (`definition.RegistrySubscriber`) writes the adapter's own Beckn Subscriber record to `{subscribeNamespace}/{subscribeRegistryName}/{subscribeRecordName}`. It runs at startup when a std handler has a [`subscribe` block](../../../../CONFIG.md#subscribe), which supplies the subscriber ID, callback URL and key manager public keys.
 
 ```
 1.  GET {subscribeURL}/lookup/{namespace}/{registry}/{record}             (public, no API key)
-2a. 404 -> POST {subscribeURL}/{namespace}/{registry}/save-record-as-draft?publish=true
-           {"record_name", "description", "details"}                       -> status "created"
-2b. 200, details differ -> POST {subscribeURL}/{namespace}/{registry}/{record}/update-record
-           {"description", "details", "meta"?}                             -> status "updated"
-2c. 200, details match  -> no write                                         -> status "unchanged"
-3.  GET the record again to report its record_id and state (best effort)
+2a. 404 -> POST {subscribeURL}/{namespace}/{registry}/save-record-as-draft?publish=true   -> "created"
+2b. 200, details differ -> POST {subscribeURL}/{namespace}/{registry}/{record}/update-record -> "updated"
+2c. 200, details match  -> no write                                                       -> "unchanged"
+3.  GET the record again for its record_id and state (best effort)
 ```
 
-Writes send `Authorization: Bearer $DEDI_API_KEY` and `Content-Type: application/json`, and accept any 2xx. An update starts from the existing record. Details keys this adapter does not manage, the record's `meta` (e.g. `catalog_index_urls`), and its description (unless `subscribeDescription` is set) are sent back unchanged.
+Writes send `Authorization: Bearer $DEDI_API_KEY`. An update keeps the record's `meta`, unmanaged `details` keys and description (unless `subscribeDescription` is set). The **record ID is the key ID** peers look your signing key up by, so set your key manager's `keyId` to the value logged after the first subscribe.
 
-The result is a `model.SubscribeResult{Status, RecordID, State}`. The **record ID is the key ID** other participants look your signing key up by (`/lookup/{subscriber_id}/subscribers.beckn.one/{record_id}` above). The handler therefore warns when it differs from the key manager's `keyId`, or when the record is not `live`. On a first subscribe, DeDi assigns the record ID, so set your key manager's `keyId` to the value it reports.
-
-### Where the API comes from
-
-- **Lookup**: `GET /dedi/lookup/{namespace}/{registry_name}/{record_name}` is documented, and public (`security: []`), in the DeDi protocol's [OpenAPI](https://github.com/LF-Decentralized-Trust-labs/decentralized-directory-protocol/blob/main/api/openapi.yaml) (v2.0.0, servers `https://api.dedi.global` and `https://staging-api.dedi.global`). Its Bearer API-key scheme is the one used for writes.
-- **Create / update**: these are **not in the published OpenAPI**, which only has lookup, query and versions. They are the calls the dedi.global publish portal (`https://publish.dedi.global`) makes for "Publish record" and "Update record". The portal is what the [NFH hosted onboarding guide](https://docs.nfh.global/build/onboarding/hosted.md) tells participants to use. API keys are generated in the portal. Without a key, `api.dedi.global` answers these routes `402 Payment Required`, while an unknown route returns `404 Cannot POST`.
-- The other onboarding path, [file-based](https://docs.nfh.global/build/onboarding/file-based.md), publishes signed DeDi files (`/.well-known/dedi.index.json`) on the participant's own domain. It has no write API, so this plugin does not cover it.
-- No Beckn request signature is involved: DeDi authenticates writes with the API key. The record carries your signing **public** key, which the adapter reads from the key manager.
-
-**Open questions for maintainers / the DeDi team:** the write endpoints are undocumented and could change. The following are also unverified against a live record:
-- whether `update-record` keeps a live record live;
-- what a create returns for a record name that already exists only as a draft;
-- whether the fabric lookup cache (`url`) can find a record by name rather than record ID.
+**Caveat**: the lookup is in DeDi's [OpenAPI](https://github.com/LF-Decentralized-Trust-labs/decentralized-directory-protocol/blob/main/api/openapi.yaml); the create and update endpoints are not (they are the calls the [publish portal](https://publish.dedi.global) makes) and may change.
 
 ### Subscribe errors
 
-`Subscribe` runs at startup, not on a request path. Its errors therefore keep DeDi's response text, such as schema validation details. Other failures are classified like the lookups:
+Errors keep DeDi's response text (e.g. schema validation details), since `Subscribe` never runs on a request path.
 
 | Failure | Code | HTTP |
 |---------|------|------|
-| `subscribeURL` not configured (wraps `definition.ErrSubscribeNotConfigured`, so a handler `subscribe` block fails startup on it) | `NET_INTERNAL_ERROR` | 500 |
+| `subscribeURL` not configured (wraps `definition.ErrSubscribeNotConfigured`) | `NET_INTERNAL_ERROR` | 500 |
 | Missing `subscriber_id`, `url`, `type` or `signing_public_key` | `CTX_MISSING_FIELD` | 400 |
-| DeDi rejected the API key (401, 402, 403). The message names `DEDI_API_KEY` and the namespace | `NET_INTERNAL_ERROR` | 500 |
-| DeDi rejected the record (other 4xx, e.g. a schema violation) | `NET_INTERNAL_ERROR` | 500 |
+| DeDi rejected the API key (401, 402, 403) or the record (other 4xx) | `NET_INTERNAL_ERROR` | 500 |
 | Namespace or registry not found on write (404) | `NET_ENTITY_NOT_FOUND` † | 404 |
-| Lookup or write: timeout / unreachable / 5xx or 429 after retries | `NET_TIMEOUT` / `NET_DOWNSTREAM_UNAVAILABLE` | 504 / 503 |
+| Timeout / unreachable / 5xx or 429 after retries | `NET_TIMEOUT` / `NET_DOWNSTREAM_UNAVAILABLE` | 504 / 503 |
 | Lookup returned an unusable 200 body | `NET_DOWNSTREAM_INVALID_RESPONSE` † | 502 |
 
-A failed read-back after a successful write is logged and reported as an empty `RecordID`/`State`, not as an error. Writes are retried like lookups. A create retried after a 5xx that DeDi had in fact applied can therefore fail as a duplicate; the next startup then finds the record and updates it. The same applies when several replicas start at once and all find no record: one create wins and the others fail for that start. Each call runs in a `registry subscribe` span carrying the subscriber ID, outcome status and record ID.
+Writes are retried like lookups, so a create retried after a 5xx that DeDi did apply, or racing replicas, can fail as a duplicate for that start; the next start finds the record and updates it.
 
 ## Usage Context
 
@@ -224,7 +207,7 @@ The tests cover:
 - Error-code classification of every failure path (`dediregistry_errors_test.go` and the error cases in `dediregistry_test.go`)
 - Configuration validation
 - Plugin provider functionality
-- `Subscribe` against an in-memory DeDi (`subscribe_test.go`): create, update (keeping `meta` and unmanaged details), unchanged, retries, auth/schema/5xx/malformed failures, path escaping, and API-key redaction
+- `Subscribe` against an in-memory DeDi (`subscribe_test.go`)
 
 ## Migration Notes
 

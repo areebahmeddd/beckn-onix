@@ -71,26 +71,23 @@ type SubscriberRecord struct {
 	MetaArrays   map[string][]string // array-shaped meta values (e.g. NFH-014's meta.catalog_index_urls: [{url}, ...]) — kept separate from Meta rather than widening it to map[string]any, so every existing caller of Meta[key] keeps working unchanged
 }
 
-// SubscribeStatus is what RegistrySubscriber.Subscribe did to the subscriber's registry record.
+// SubscribeStatus is what RegistrySubscriber.Subscribe did to the registry record.
 type SubscribeStatus string
 
+// Subscribe outcomes.
 const (
-	// SubscribeCreated means no record existed, so one was created.
-	SubscribeCreated SubscribeStatus = "created"
-	// SubscribeUpdated means a record existed with different details, so it was updated.
-	SubscribeUpdated SubscribeStatus = "updated"
-	// SubscribeUnchanged means a record already held the requested details; nothing was written.
+	SubscribeCreated   SubscribeStatus = "created"
+	SubscribeUpdated   SubscribeStatus = "updated"
 	SubscribeUnchanged SubscribeStatus = "unchanged"
 )
 
 // SubscribeResult reports the outcome of RegistrySubscriber.Subscribe.
 type SubscribeResult struct {
 	Status SubscribeStatus
-	// RecordID is the registry-assigned identifier of the subscriber's record, when the
-	// registry reports one. For a DeDi registry this is the key ID other participants
-	// look the subscriber's signing key up by. Empty when it could not be read back.
+	// RecordID is the registry's ID for the record; for DeDi it is the key ID
+	// peers look the signing key up by. Empty if the registry did not report it.
 	RecordID string
-	// State is the record's registry state (e.g. "live"), when the registry reports one.
+	// State is the record's registry state (e.g. "live"), if reported.
 	State string
 }
 

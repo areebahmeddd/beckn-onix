@@ -96,17 +96,14 @@ func (d dediRegistryProvider) parseConfig(config map[string]string) (*dediregist
 	return dediConfig, nil
 }
 
-// subscribeConfigKeys are the plugin config keys that configure Subscribe.
 var subscribeConfigKeys = []string{
-	"subscribeURL", "subscribeNamespace", "subscribeRegistryName",
+	"subscribeNamespace", "subscribeRegistryName",
 	"subscribeRecordName", "subscribeCountries", "subscribeDescription",
 }
 
-// parseSubscribeConfig returns the Subscribe configuration, or nil when
-// subscribeURL is unset: subscribing is opt-in, and without it the plugin
-// stays lookup-only. The API key is read from the DEDI_API_KEY environment
-// variable rather than the config map, so it never sits in a YAML file.
-// dediregistry.New validates the result.
+// parseSubscribeConfig returns nil when subscribeURL is unset. The API key comes
+// from the environment so it never sits in YAML; dediregistry.New validates the
+// result.
 func parseSubscribeConfig(config map[string]string) (*dediregistry.SubscribeConfig, error) {
 	if config["subscribeURL"] == "" {
 		for _, key := range subscribeConfigKeys {

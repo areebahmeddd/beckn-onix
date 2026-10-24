@@ -13,21 +13,15 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 )
 
-// defaultSubscribeTimeout bounds a subscribe call when subscribe.timeout is
-// unset. The registry plugin's own client may have no timeout, and module
-// startup runs on a context without a deadline, so without this bound a hung
-// registry would keep the adapter from ever listening.
+// defaultSubscribeTimeout applies when subscribe.timeout is unset. Startup has
+// no deadline and the registry client may have none, so a hung registry would
+// otherwise keep the adapter from ever listening.
 const defaultSubscribeTimeout = time.Minute
 
-// subscribeToRegistry publishes the module's subscriber record to its
-// registry plugin when cfg.Subscribe is set, and does nothing otherwise.
-//
-// A configuration that cannot work (no registry, a registry that cannot
-// subscribe or has no subscribe settings, no key manager, no subscriberId, a
-// bad callback URL or type) always fails startup. A failure while subscribing
-// (key lookup or the registry call, bounded by subscribe.timeout) fails
-// startup only when subscribe.required is true; otherwise it is logged and
-// startup continues, so a registry outage cannot keep the adapter down.
+// subscribeToRegistry publishes the module's subscriber record when
+// cfg.Subscribe is set. Configuration errors always fail startup; a subscribe
+// failure fails it only when subscribe.required is set, so a registry outage
+// cannot keep the adapter down.
 func subscribeToRegistry(ctx context.Context, registry definition.RegistryLookup, km definition.KeyManager, cfg *Config) error {
 	sc := cfg.Subscribe
 	if sc == nil {
@@ -64,8 +58,8 @@ func subscribeToRegistry(ctx context.Context, registry definition.RegistryLookup
 	return nil
 }
 
-// subscribeTarget checks the plugins and identity subscribing needs and
-// returns the registry as a RegistrySubscriber.
+// subscribeTarget validates what subscribing needs and returns the registry as
+// a RegistrySubscriber.
 func subscribeTarget(registry definition.RegistryLookup, km definition.KeyManager, cfg *Config) (definition.RegistrySubscriber, error) {
 	if registry == nil {
 		return nil, errors.New("subscribe requires a registry plugin")
@@ -87,8 +81,7 @@ func subscribeTarget(registry definition.RegistryLookup, km definition.KeyManage
 	return subscriber, nil
 }
 
-// subscriberType returns the configured participant type, or derives it from
-// the handler role for the bap and bpp roles.
+// subscriberType defaults the participant type to the role for bap and bpp.
 func subscriberType(configured string, role model.Role) (string, error) {
 	if configured != "" {
 		return configured, nil
@@ -101,9 +94,8 @@ func subscriberType(configured string, role model.Role) (string, error) {
 	}
 }
 
-// subscribe reads the subscriber's public keys from the key manager and
-// publishes them with the callback URL and type. It also returns the
-// keyset's key ID for reportSubscribeResult.
+// subscribe publishes the key manager's public keys for subscriberID and also
+// returns the keyset's key ID.
 func subscribe(ctx context.Context, subscriber definition.RegistrySubscriber, km definition.KeyManager, subscriberID, callbackURL, participantType string) (*model.SubscribeResult, string, error) {
 	keyset, err := km.Keyset(ctx, subscriberID)
 	if err != nil {
@@ -131,11 +123,9 @@ func subscribe(ctx context.Context, subscriber definition.RegistrySubscriber, km
 	return result, keyset.UniqueKeyID, nil
 }
 
-// reportSubscribeResult logs the outcome, and warns when the record is not
-// usable as configured: a record ID other than the key manager's key ID (a
-// DeDi registry serves the signing key under the record ID, and peers look it
-// up by the key ID in this adapter's Authorization header), or a record that
-// is not live.
+// reportSubscribeResult warns when the record ID differs from the key ID (DeDi
+// serves the signing key under the record ID, but peers look it up by the key
+// ID in our Authorization header) or when the record is not live.
 func reportSubscribeResult(ctx context.Context, subscriberID, keyID string, result *model.SubscribeResult) {
 	log.Infof(ctx, "Subscribed %s to the registry: status=%s record_id=%q state=%q", subscriberID, result.Status, result.RecordID, result.State)
 	if result.RecordID != "" && result.RecordID != keyID {
