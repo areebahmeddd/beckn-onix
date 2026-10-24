@@ -1,78 +1,57 @@
 #!/bin/bash
-# Helpers for setting up an ONIX adapter node (the Go adapter in cmd/adapter)
-# that participates in a Beckn network. Sourced by install/beckn-onix.sh.
-#
-# The flow is: collect inputs (onix_collect_*), confirm, generate keys,
-# write a self-contained configuration directory (config/onix-node/ by
-# default) containing the adapter config, its routing rules, the registry
-# registration details and the docker compose environment, and finally start
-# the adapter and its Redis with install/docker-compose-onix-node.yml.
-#
-# Everything here is bash 3.2 compatible (no associative arrays) and never
-# uses eval: values are returned from prompt helpers with printf -v.
-#
-# Callers may override ONIX_NODE_CONFIG_DIR (host directory for the generated
-# configuration) before sourcing, e.g. for testing.
+# Helpers for setting up an ONIX adapter node. Sourced by install/beckn-onix.sh.
+# Kept bash 3.2 compatible (macOS): no associative arrays, and prompt helpers
+# return values with printf -v instead of eval.
 
 ONIX_NODE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ONIX_INSTALL_DIR="$(cd "$ONIX_NODE_LIB_DIR/.." && pwd)"
 ONIX_REPO_DIR="$(cd "$ONIX_INSTALL_DIR/.." && pwd)"
 
 ONIX_NODE_CONFIG_DIR="${ONIX_NODE_CONFIG_DIR:-$ONIX_REPO_DIR/config/onix-node}"
-# The compose file mounts ../config at /app/config, so config/onix-node/ on the
-# host is /app/config/onix-node/ inside the adapter container.
+# docker-compose-onix-node.yml mounts ../config at /app/config.
 ONIX_NODE_CONTAINER_DIR="/app/config/onix-node"
 ONIX_NODE_COMPOSE_FILE="$ONIX_INSTALL_DIR/docker-compose-onix-node.yml"
 ONIX_NODE_ENV_FILE_NAME="compose.env"
 ONIX_NODE_REDIS_ADDR="redis-onix-node:6379"
-# A node running both roles gives its BPP modules a second Redis: the payload
-# store keys entries by message_id only, so a BAP and BPP sharing one Redis
-# overwrite each other's records when they transact with each other (see
-# SETUP.md, "Redis: One Instance per ONIX Node").
+# The payload store keys entries by message_id only, so the BPP modules of a
+# BOTH node get their own Redis instead of overwriting the BAP's entries.
 ONIX_NODE_REDIS_BPP_ADDR="redis-onix-node-bpp:6379"
 ONIX_NODE_HTTP_PORT=8081
 ONIX_DEDI_REGISTRY_URL="https://fabric.nfh.global/registry/dedi"
-# Fallback key generator image (see onix_generate_keys).
 ONIX_KEYGEN_IMAGE="golang:1.26-alpine"
 
-# ---------------------------------------------------------------------------
-# Input validation and prompt helpers
-# ---------------------------------------------------------------------------
-
-# onix_is_url VALUE - succeeds for an absolute http(s) URL with a host and no
-# whitespace, quotes, backslashes or query/fragment. The value is written into
-# YAML and JSON, so the character set is deliberately conservative.
+# Values are written into YAML and JSON, so the accepted characters are kept
+# conservative (no whitespace, quotes, backslashes, query or fragment).
 onix_is_url() {
     local chars='^https?://[A-Za-z0-9._~%:@!$&()*+,;=/-]+$' host='^https?://[^/:@]+'
     [[ "$1" =~ $chars ]] && [[ "$1" =~ $host ]]
 }
 
-# onix_is_subscriber_id VALUE - subscriber ids are usually domain names
-# (bap.example.com); allow the characters registries accept in practice.
 onix_is_subscriber_id() {
     [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]]
 }
 
-# onix_is_key VALUE - a raw 32-byte key, base64 encoded (43 chars + "=").
+# A raw 32-byte key, base64 encoded.
 onix_is_key() {
     [[ "$1" =~ ^[A-Za-z0-9+/]{43}=$ ]]
 }
 
-# onix_is_version VALUE - a Beckn protocol version such as 1.1.0 or 2.0.0.
 onix_is_version() {
     [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 }
 
-# onix_is_v2 VERSION - succeeds when VERSION is 2.x.x or later; the adapter's
-# router treats those as domain-agnostic.
+# The adapter's router treats 2.x and later as domain-agnostic.
 onix_is_v2() {
     local major=${1%%.*}
     [[ "$major" =~ ^[0-9]+$ ]] && ((major >= 2))
 }
 
-# onix_read VAR PROMPT [secret] - read one line into VAR. With "secret" the
-# answer is not echoed (private keys, passwords). The installer stops when the
-# input ends instead of re-prompting forever.
+onix_lower() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+# onix_read VAR PROMPT [secret]: stops the installer at end of input instead
+# of re-prompting forever. "secret" disables echo.
 onix_read() {
     local __line
     if [[ "${3:-}" == "secret" ]]; then
@@ -90,8 +69,7 @@ onix_input_ended() {
     exit 1
 }
 
-# onix_prompt VAR PROMPT [DEFAULT] [secret] - read a single line into VAR,
-# falling back to DEFAULT when the answer is empty.
+# onix_prompt VAR PROMPT [DEFAULT] [secret]: the trimmed answer, or DEFAULT.
 onix_prompt() {
     local __var=$1 __prompt=$2 __default=${3:-} __answer
     if [[ -n "$__default" ]]; then
@@ -99,16 +77,14 @@ onix_prompt() {
     else
         onix_read __answer "$__prompt: " "${4:-}"
     fi
-    # Trim surrounding whitespace.
     __answer="${__answer#"${__answer%%[![:space:]]*}"}"
     __answer="${__answer%"${__answer##*[![:space:]]}"}"
     [[ -z "$__answer" ]] && __answer=$__default
     printf -v "$__var" '%s' "$__answer"
 }
 
-# onix_prompt_url VAR PROMPT [DEFAULT] [optional] - prompt until a valid
-# http(s) URL is entered. A trailing slash is removed. With a fourth argument
-# of "optional" an empty answer is accepted.
+# onix_prompt_url VAR PROMPT [DEFAULT] [optional]: drops a trailing slash;
+# "optional" accepts an empty answer.
 onix_prompt_url() {
     local __var=$1 __prompt=$2 __default=${3:-} __optional=${4:-} __value
     while true; do
@@ -120,12 +96,11 @@ onix_prompt_url() {
         if onix_is_url "$__value"; then
             break
         fi
-        echo "${RED}Invalid URL. Enter an absolute URL starting with http:// or https:// (no spaces or quotes).${NC}"
+        echo "${RED}Invalid URL. Use an absolute http:// or https:// URL without spaces or quotes.${NC}"
     done
     printf -v "$__var" '%s' "$__value"
 }
 
-# onix_prompt_subscriber_id VAR PROMPT [DEFAULT]
 onix_prompt_subscriber_id() {
     local __var=$1 __prompt=$2 __default=${3:-} __value
     while true; do
@@ -138,10 +113,9 @@ onix_prompt_subscriber_id() {
     printf -v "$__var" '%s' "$__value"
 }
 
-# onix_prompt_key VAR PROMPT [secret] - prompt for a base64 key ("secret" for
-# private keys, which are then not echoed). A 64-byte Ed25519 private key (seed
-# + public key, as written by the legacy protocol server) is accepted and
-# reduced to its 32-byte seed.
+# onix_prompt_key VAR PROMPT [secret]: also accepts the 64-byte Ed25519
+# private key (seed + public key) of the legacy protocol server and keeps
+# only its seed.
 onix_prompt_key() {
     local __var=$1 __prompt=$2 __mode=${3:-} __value __seed
     while true; do
@@ -162,7 +136,7 @@ onix_prompt_key() {
     printf -v "$__var" '%s' "$__value"
 }
 
-# onix_prompt_yes_no PROMPT DEFAULT(Y|N) - succeeds on yes.
+# onix_prompt_yes_no PROMPT DEFAULT(Y|N): succeeds on yes.
 onix_prompt_yes_no() {
     local __prompt=$1 __default=$2 __answer
     while true; do
@@ -180,7 +154,7 @@ onix_prompt_yes_no() {
     done
 }
 
-# onix_prompt_choice VAR PROMPT MAX [DEFAULT] - prompt until a number in 1..MAX.
+# onix_prompt_choice VAR PROMPT MAX [DEFAULT]
 onix_prompt_choice() {
     local __var=$1 __prompt=$2 __max=$3 __default=${4:-} __value
     while true; do
@@ -193,48 +167,41 @@ onix_prompt_choice() {
     printf -v "$__var" '%s' "$__value"
 }
 
+# GNU base64 uses -d, older macOS base64 -D.
 onix_base64_decode() {
     base64 -d 2>/dev/null || base64 -D
 }
 
-# onix_public_key_for ALG(ed25519|x25519) PRIVATE - derive the base64 public
-# key of a raw base64 private key with OpenSSL by wrapping it in its PKCS#8
-# DER encoding. Prints nothing when OpenSSL cannot do it.
+# onix_public_key_for ed25519|x25519 PRIVATE: derives the public key by
+# wrapping the raw key in its PKCS#8 DER header for OpenSSL. Prints nothing
+# when OpenSSL cannot do it.
 onix_public_key_for() {
     local prefix
     command -v openssl >/dev/null 2>&1 || return 0
     case $1 in
     ed25519) prefix='\x30\x2e\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x70\x04\x22\x04\x20' ;;
     x25519) prefix='\x30\x2e\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x6e\x04\x22\x04\x20' ;;
-    *) return 0 ;;
     esac
     { printf '%b' "$prefix" && printf '%s' "$2" | onix_base64_decode; } 2>/dev/null |
         openssl pkey -inform DER -pubout -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d '\n'
 }
 
-# onix_key_pair_matches ALG PRIVATE PUBLIC - fails only when the public key
-# provably does not belong to the private key.
+# onix_key_pair_matches ALG PRIVATE PUBLIC: fails only when PUBLIC provably
+# does not belong to PRIVATE.
 onix_key_pair_matches() {
     local derived
     derived=$(onix_public_key_for "$1" "$2")
     ! onix_is_key "$derived" || [[ "$derived" == "$3" ]]
 }
 
-# ---------------------------------------------------------------------------
-# Node state
-#
-# A node has one role (BAP, BPP or BOTH) and takes part in one or more
-# networks. Per-network values live in indexed arrays so the same generator
-# serves a single network (prefix "") and several networks (prefix "/<name>").
-# ---------------------------------------------------------------------------
-
+# Per-network values live in indexed arrays so the same generator serves one
+# network (path prefix "") or several (prefix "/<name>").
 onix_reset_state() {
     onix_role=""
     onix_replace_confirmed=0
     onix_public_base_url=""
     onix_bap_app_url=""
     onix_bpp_app_url=""
-    onix_log_level="info"
     onix_image="fidedocker/onix-adapter"
     onix_host_port="8081"
     onix_bind_address="127.0.0.1"
@@ -268,7 +235,6 @@ onix_reset_state() {
     onix_bpp_encr_pub=()
 }
 
-# onix_role_is ROLE - succeeds when the collected role is ROLE.
 onix_role_is() {
     [[ "$onix_role" == "$1" ]]
 }
@@ -281,12 +247,8 @@ onix_has_bpp() {
     [[ "$onix_role" == "BPP" || "$onix_role" == "BOTH" ]]
 }
 
-# ---------------------------------------------------------------------------
-# Input collection
-# ---------------------------------------------------------------------------
-
-# onix_collect_role [with_gateway] - sets onix_role to BAP, BPP or BOTH, or
-# GATEWAY when "with_gateway" is passed and the legacy gateway is chosen.
+# onix_collect_role [with_gateway]: sets onix_role to BAP, BPP, BOTH or (with
+# "with_gateway") GATEWAY.
 onix_collect_role() {
     local choice max=3
     echo -e "\nWhich role will this node play in the network?"
@@ -306,8 +268,8 @@ onix_collect_role() {
     esac
 }
 
-# onix_collect_network INDEX NAME PREFIX - registry and protocol details of
-# one network.
+# onix_collect_network INDEX NAME PREFIX: registry and protocol of network
+# INDEX. PREFIX ("" or "/<name>") is prepended to its module paths.
 onix_collect_network() {
     local i=$1 choice url ids version domain search_url default_version
     onix_net_name[i]=$2
@@ -316,13 +278,13 @@ onix_collect_network() {
 
     echo -e "\nWhich registry does the network use?"
     echo "1. Beckn One / DeDi registry (dediregistry plugin)"
-    echo "2. Registry with a /lookup API, e.g. the Beckn registry this installer deploys (registry plugin)"
+    echo "2. Registry with a /lookup API, such as the Beckn registry (registry plugin)"
     onix_prompt_choice choice "Enter your choice" 2
     if [[ $choice -eq 1 ]]; then
         onix_net_registry_type[i]="dedi"
-        echo "${BLUE}The DeDi registry URL is a locked Beckn constant ($ONIX_DEDI_REGISTRY_URL); it is not written to the config.${NC}"
+        echo "${BLUE}The DeDi registry URL is fixed ($ONIX_DEDI_REGISTRY_URL) and is not written to the config.${NC}"
         while true; do
-            onix_prompt ids "Network ID(s) to accept participants from, comma-separated (e.g. beckn.one/testnet; empty accepts any network)"
+            onix_prompt ids "Network IDs to accept participants from, comma-separated (e.g. beckn.one/testnet; empty accepts all)"
             ids=$(printf '%s' "$ids" | tr -d '[:space:]')
             if [[ -z "$ids" || "$ids" =~ ^[A-Za-z0-9._:/-]+(,[A-Za-z0-9._:/-]+)*$ ]]; then
                 break
@@ -330,14 +292,14 @@ onix_collect_network() {
             echo "${RED}Invalid network ID list. Use comma-separated IDs such as beckn.one/testnet.${NC}"
         done
         if [[ -z "$ids" ]]; then
-            echo "${YELLOW}Warning: participants of every Beckn One network will be accepted; enter network IDs to restrict this.${NC}"
+            echo "${YELLOW}Warning: participants from every Beckn One network will be accepted.${NC}"
         fi
         onix_net_network_ids[i]=$ids
         onix_net_registry_url[i]=""
         default_version="2.0.0"
     else
         onix_net_registry_type[i]="legacy"
-        echo "${BLUE}The adapter calls <registry URL>/lookup, so include the path prefix of the subscriber API.${NC}"
+        echo "${BLUE}The adapter calls <registry URL>/lookup, so include the subscriber API path.${NC}"
         onix_prompt_url url "Registry URL (e.g. https://registry.example.com/subscribers)"
         onix_net_registry_url[i]=$url
         onix_net_network_ids[i]=""
@@ -345,7 +307,7 @@ onix_collect_network() {
     fi
 
     while true; do
-        onix_prompt version "Beckn protocol version used by the network" "$default_version"
+        onix_prompt version "Beckn protocol version" "$default_version"
         if onix_is_version "$version"; then
             break
         fi
@@ -369,30 +331,29 @@ onix_collect_network() {
     search_url=""
     if onix_has_bap; then
         if onix_is_v2 "$version"; then
-            onix_prompt_url search_url "Discovery service URL for 'discover' calls (empty sends discover to the bpp_uri in the request)" "" optional
+            onix_prompt_url search_url "Discovery service URL for 'discover' (empty uses the bpp_uri of the request)" "" optional
         else
-            onix_prompt_url search_url "Gateway URL for 'search' calls, e.g. https://gateway.example.com/bg (empty sends search to the bpp_uri in the request)" "" optional
+            onix_prompt_url search_url "Gateway URL for 'search', e.g. https://gateway.example.com/bg (empty uses the bpp_uri of the request)" "" optional
         fi
     fi
     onix_net_search_url[i]=$search_url
 }
 
-# onix_collect_participant INDEX ROLE(BAP|BPP) - subscriber identity and keys
-# of this node in network INDEX.
+# onix_collect_participant INDEX BAP|BPP: subscriber identity and keys.
 onix_collect_participant() {
     local i=$1 role=$2 lrole id url key_id choice max sp spub ep epub mode
     local path prefix=${onix_net_prefix[$1]}
-    lrole=$(printf '%s' "$role" | tr '[:upper:]' '[:lower:]')
+    lrole=$(onix_lower "$role")
     path="$prefix/$lrole/receiver"
 
     echo -e "\n${GREEN}$role subscriber details${NC}${onix_net_name[i]:+ for network ${onix_net_name[i]}}"
     onix_prompt_subscriber_id id "$role subscriber ID (e.g. $lrole.example.com)"
-    onix_prompt_url url "$role subscriber URL registered in the registry" "$onix_public_base_url$path"
-    onix_prompt_subscriber_id key_id "Key ID registered for this subscriber (unique_key_id / DeDi record ID)" "$id-key"
+    onix_prompt_url url "$role subscriber URL" "$onix_public_base_url$path"
+    onix_prompt_subscriber_id key_id "Key ID (unique_key_id or DeDi record ID)" "$id-key"
 
-    echo "How should the signing and encryption keys for $id be set up?"
+    echo "Signing and encryption keys for $id:"
     echo "1. Generate new keys (register the public keys with the registry)"
-    echo "2. Enter existing keys already registered for this subscriber"
+    echo "2. Enter keys already registered for this subscriber"
     max=2
     if ((i > 0)); then
         echo "3. Reuse the keys of network '${onix_net_name[0]}'"
@@ -409,7 +370,7 @@ onix_collect_participant() {
             onix_prompt_key sp "Signing private key (base64 Ed25519 seed; not shown)" secret
             onix_prompt_key spub "Signing public key (base64)"
             onix_key_pair_matches ed25519 "$sp" "$spub" && break
-            echo "${RED}The signing public key does not belong to the signing private key. Enter both again.${NC}"
+            echo "${RED}The signing public key does not match the private key. Enter both again.${NC}"
         done
         echo "${BLUE}Leave the encryption private key empty to generate a new X25519 pair.${NC}"
         while true; do
@@ -421,7 +382,7 @@ onix_collect_participant() {
             fi
             onix_prompt_key epub "Encryption public key (base64 X25519)"
             onix_key_pair_matches x25519 "$ep" "$epub" && break
-            echo "${RED}The encryption public key does not belong to the encryption private key. Enter both again.${NC}"
+            echo "${RED}The encryption public key does not match the private key. Enter both again.${NC}"
         done
         ;;
     3) mode="reuse" ;;
@@ -448,34 +409,29 @@ onix_collect_participant() {
     fi
 }
 
-# onix_collect_public_base_url - the URL other participants use to reach this
-# adapter (normally a TLS-terminating reverse proxy in front of it).
 onix_collect_public_base_url() {
-    echo -e "\nOther participants must reach this adapter's receiver endpoints over the internet,"
-    echo "normally through a reverse proxy / load balancer that terminates TLS."
+    echo -e "\nOther participants reach this adapter's receiver endpoints over the internet, usually through a TLS reverse proxy."
     onix_prompt_url onix_public_base_url "Public base URL of this adapter (e.g. https://onix.example.com)"
     if [[ "$onix_public_base_url" == http://* ]]; then
-        echo "${YELLOW}Warning: the public URL is not HTTPS. Production networks expect TLS on participant URLs.${NC}"
+        echo "${YELLOW}Warning: the public URL is not HTTPS; production networks expect TLS.${NC}"
     fi
 }
 
-# onix_collect_app_urls - where the adapter delivers inbound messages.
 onix_collect_app_urls() {
-    echo -e "\nThe adapter forwards inbound messages to your application; the action name is appended to the URL."
+    echo -e "\nThe adapter forwards inbound messages to your application, appending the action to the URL."
     if onix_has_bap; then
-        onix_prompt_url onix_bap_app_url "URL of your BAP application for callbacks (e.g. http://bap-app:3000/beckn -> /beckn/on_select)"
+        onix_prompt_url onix_bap_app_url "BAP application URL for callbacks (e.g. http://bap-app:3000/beckn)"
     fi
     if onix_has_bpp; then
-        onix_prompt_url onix_bpp_app_url "URL of your BPP application for requests (e.g. http://bpp-app:3000/beckn -> /beckn/select)"
+        onix_prompt_url onix_bpp_app_url "BPP application URL for requests (e.g. http://bpp-app:3000/beckn)"
     fi
 }
 
-# onix_collect_runtime - container image and port binding.
 onix_collect_runtime() {
     echo ""
     while true; do
         onix_prompt onix_image "ONIX adapter Docker image" "$onix_image"
-        # Written unquoted to compose.env, so only image-reference characters.
+        # Written unquoted to compose.env.
         if [[ "$onix_image" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]*$ ]]; then
             break
         fi
@@ -490,7 +446,7 @@ onix_collect_runtime() {
         echo "${RED}Invalid port.${NC}"
     done
     echo "The caller endpoints (/bap/caller/, /bpp/caller/) sign whatever they receive and must not be public."
-    if onix_prompt_yes_no "Publish the adapter port on 127.0.0.1 only (recommended when a reverse proxy runs on this host)?" Y; then
+    if onix_prompt_yes_no "Publish the adapter port on 127.0.0.1 only (recommended with a reverse proxy on this host)?" Y; then
         onix_bind_address="127.0.0.1"
     else
         onix_bind_address="0.0.0.0"
@@ -498,9 +454,8 @@ onix_collect_runtime() {
     fi
 }
 
-# onix_print_summary - what will be set up, before anything is changed.
 onix_print_summary() {
-    local i role id key_mode
+    local i
     echo -e "\n${BLUE}Summary${NC}"
     echo "  Role            : $onix_role"
     echo "  Public base URL : $onix_public_base_url"
@@ -517,25 +472,13 @@ onix_print_summary() {
         fi
         echo "    Version       : ${onix_net_version[i]}${onix_net_domain[i]:+, domain ${onix_net_domain[i]}}"
         [[ -n "${onix_net_search_url[i]}" ]] && echo "    Search target : ${onix_net_search_url[i]}"
-        for role in BAP BPP; do
-            if [[ "$role" == "BAP" ]]; then
-                onix_has_bap || continue
-                id=${onix_bap_id[i]} key_mode=${onix_bap_key_mode[i]}
-            else
-                onix_has_bpp || continue
-                id=${onix_bpp_id[i]} key_mode=${onix_bpp_key_mode[i]}
-            fi
-            echo "    $role           : $id (keys: $key_mode)"
-        done
+        if onix_has_bap; then echo "    BAP           : ${onix_bap_id[i]} (keys: ${onix_bap_key_mode[i]})"; fi
+        if onix_has_bpp; then echo "    BPP           : ${onix_bpp_id[i]} (keys: ${onix_bpp_key_mode[i]})"; fi
     done
 }
 
-# ---------------------------------------------------------------------------
-# Keys
-# ---------------------------------------------------------------------------
-
-# onix_generate_keys_openssl - Ed25519 and X25519 key pairs via OpenSSL 1.1.1+.
-# PKCS#8 / SPKI DER encodings of these keys end in the 32 raw key bytes.
+# Needs OpenSSL 1.1.1+. The PKCS#8 and SPKI DER encodings of these keys end in
+# the 32 raw key bytes.
 onix_generate_keys_openssl() {
     command -v openssl >/dev/null 2>&1 || return 1
     local tmp alg prefix der_len rc=1
@@ -559,7 +502,7 @@ onix_generate_keys_openssl() {
     return $rc
 }
 
-# onix_parse_generated_keys OUTPUT - parse install/generate-ed25519-keys.go output.
+# Parses the output of install/generate-ed25519-keys.go.
 onix_parse_generated_keys() {
     onix_gen_sign_priv=$(printf '%s\n' "$1" | awk '/^signingPrivateKey:/ {print $2}')
     onix_gen_sign_pub=$(printf '%s\n' "$1" | awk '/^signingPublicKey:/ {print $2}')
@@ -567,14 +510,13 @@ onix_parse_generated_keys() {
     onix_gen_encr_pub=$(printf '%s\n' "$1" | awk '/^encrPublicKey:/ {print $2}')
 }
 
-# onix_generated_keys_valid - succeeds when all four onix_gen_* keys are set.
 onix_generated_keys_valid() {
     onix_is_key "$onix_gen_sign_priv" && onix_is_key "$onix_gen_sign_pub" &&
         onix_is_key "$onix_gen_encr_priv" && onix_is_key "$onix_gen_encr_pub"
 }
 
-# onix_generate_keys - sets onix_gen_{sign,encr}_{priv,pub}. Tries OpenSSL,
-# then a local Go toolchain, then Go in a throwaway Docker container.
+# Sets onix_gen_{sign,encr}_{priv,pub} using OpenSSL, else a local Go
+# toolchain, else Go in a throwaway container.
 onix_generate_keys() {
     onix_gen_sign_priv="" onix_gen_sign_pub="" onix_gen_encr_priv="" onix_gen_encr_pub=""
     onix_generate_keys_openssl && return 0
@@ -583,8 +525,8 @@ onix_generate_keys() {
         onix_generated_keys_valid && return 0
     fi
     if command -v docker >/dev/null 2>&1; then
-        echo "${YELLOW}OpenSSL with Ed25519/X25519 support and a working Go toolchain were not found; generating keys with the $ONIX_KEYGEN_IMAGE image.${NC}" >&2
-        # Remember to remove the image afterwards (onix_resolve_all_keys) if it is pulled here.
+        echo "${YELLOW}No OpenSSL with Ed25519/X25519 support or Go toolchain found; generating keys with the $ONIX_KEYGEN_IMAGE image.${NC}" >&2
+        # onix_resolve_all_keys removes the image if it was pulled here.
         if [[ -z "${onix_keygen_image_pulled:-}" ]] && ! docker image inspect "$ONIX_KEYGEN_IMAGE" >/dev/null 2>&1; then
             onix_keygen_image_pulled=1
         fi
@@ -595,8 +537,8 @@ onix_generate_keys() {
     return 1
 }
 
-# onix_resolve_participant_keys INDEX ROLE - materialise the keys chosen in
-# onix_collect_participant (generate, reuse or fill in missing encryption keys).
+# onix_resolve_participant_keys INDEX ROLE: generates or copies the keys chosen
+# in onix_collect_participant, including a missing encryption pair.
 onix_resolve_participant_keys() {
     local i=$1 role=$2 mode sp spub ep epub
     if [[ "$role" == "BAP" ]]; then
@@ -635,8 +577,7 @@ onix_resolve_participant_keys() {
     fi
 }
 
-# onix_resolve_all_keys - resolve keys for every participant of every network,
-# in network order so "reuse" can copy the keys of network 1.
+# Runs in network order so "reuse" can copy the keys of the first network.
 onix_resolve_all_keys() {
     local i rc=0
     onix_keygen_image_pulled=""
@@ -644,19 +585,14 @@ onix_resolve_all_keys() {
         if onix_has_bap; then onix_resolve_participant_keys "$i" BAP || { rc=1 && break; }; fi
         if onix_has_bpp; then onix_resolve_participant_keys "$i" BPP || { rc=1 && break; }; fi
     done
-    # Like the busybox helper image in update_registry_details, do not leave the
-    # key generation image behind.
     if [[ -n "$onix_keygen_image_pulled" ]]; then
         docker rmi "$ONIX_KEYGEN_IMAGE" >/dev/null 2>&1
     fi
     return $rc
 }
 
-# ---------------------------------------------------------------------------
-# Config generation
-# ---------------------------------------------------------------------------
-
-# onix_module_name INDEX BASE - e.g. bapTxnReceiver or bapTxnReceiver-netA.
+# onix_module_name INDEX BASE: e.g. bapTxnReceiver, or bapTxnReceiver-<name>
+# when the node is in several networks.
 onix_module_name() {
     if [[ -n "${onix_net_prefix[$1]}" ]]; then
         printf '%s-%s' "$2" "${onix_net_name[$1]}"
@@ -686,8 +622,7 @@ onix_routing_rule() {
     done
 }
 
-# onix_emit_routing INDEX ROLE KIND - routing rules for one module.
-# KIND is Caller (outbound from your app) or Receiver (inbound from the network).
+# onix_emit_routing INDEX ROLE Caller|Receiver
 onix_emit_routing() {
     local i=$1 role=$2 kind=$3 version domain search_ep
     local txn="select init confirm status track cancel update rating support"
@@ -696,14 +631,12 @@ onix_emit_routing() {
     search_ep=search
     onix_is_v2 "$version" && search_ep=discover
 
-    echo "# Generated by install/beckn-onix.sh for $(onix_module_name "$i" "$(printf '%s' "$role" | tr '[:upper:]' '[:lower:]')Txn$kind")"
+    echo "# Generated by install/beckn-onix.sh for $(onix_module_name "$i" "$(onix_lower "$role")Txn$kind")"
     echo "routingRules:"
     # shellcheck disable=SC2086,SC2046 # $txn and the on_* lists are deliberate word lists
     case "$role-$kind" in
     BAP-Caller)
-        # Search/discover goes to the gateway or discovery service when one is
-        # configured (used only if the request has no bpp_uri); the rest of the
-        # transaction goes to the bpp_uri in the request.
+        # The search target is used only when the request carries no bpp_uri.
         onix_routing_rule "$version" "$domain" bpp "${onix_net_search_url[i]}" "$search_ep"
         onix_routing_rule "$version" "$domain" bpp "" $txn
         ;;
@@ -712,7 +645,7 @@ onix_emit_routing() {
         ;;
     BPP-Receiver)
         if onix_is_v2 "$version"; then
-            # In Beckn 2.x discovery is served by the discovery service, not the BPP.
+            # In Beckn 2.x the discovery service, not the BPP, serves discover.
             onix_routing_rule "$version" "$domain" url "$onix_bpp_app_url" $txn
         else
             onix_routing_rule "$version" "$domain" url "$onix_bpp_app_url" search $txn
@@ -728,18 +661,15 @@ onix_emit_routing() {
     esac
 }
 
-# onix_emit_module INDEX ROLE KIND - one adapter module.
+# onix_emit_module INDEX ROLE Caller|Receiver
 #
-# The plugin pipelines follow the maintained reference configs: Beckn 1.x
-# networks use the config/local-simple.yaml pipeline; Beckn 2.x networks use
-# the config/local-beckn-one-*.yaml pipeline (schema validation against the
-# Beckn 2.0 spec, payload store for request-signature binding and ACK
-# signature validation). checkPolicy is left out because it needs a
-# network-specific policy file.
+# Pipelines follow config/local-simple.yaml (1.x) and
+# config/local-beckn-one-*.yaml (2.x). checkPolicy is left out because it
+# needs a network-specific policy file.
 onix_emit_module() {
     local i=$1 role=$2 kind=$3 lrole name sub_id key_id sp spub ep epub v2=0
     local redis_addr=$ONIX_NODE_REDIS_ADDR
-    lrole=$(printf '%s' "$role" | tr '[:upper:]' '[:lower:]')
+    lrole=$(onix_lower "$role")
     name=$(onix_module_name "$i" "${lrole}Txn$kind")
     onix_is_v2 "${onix_net_version[i]}" && v2=1
     if [[ "$role" == "BAP" ]]; then
@@ -753,7 +683,7 @@ onix_emit_module() {
 
     cat <<EOF
   - name: $name
-    path: ${onix_net_prefix[i]}/$lrole/$(printf '%s' "$kind" | tr '[:upper:]' '[:lower:]')/
+    path: ${onix_net_prefix[i]}/$lrole/$(onix_lower "$kind")/
     handler:
       type: std
       role: $lrole
@@ -847,7 +777,6 @@ EOF
     esac
 }
 
-# onix_emit_adapter_config - the complete adapter configuration.
 onix_emit_adapter_config() {
     local i
     cat <<EOF
@@ -855,7 +784,7 @@ onix_emit_adapter_config() {
 # Contains private keys: keep this file private. See CONFIG.md for every option.
 appName: "onix-node"
 log:
-  level: $onix_log_level
+  level: info
   destinations:
     - type: stdout
   contextKeys:
@@ -885,7 +814,7 @@ EOF
     done
 }
 
-# onix_valid_dates - sets onix_valid_from / onix_valid_until (GNU and BSD date).
+# Sets onix_valid_from / onix_valid_until with GNU or BSD date.
 onix_valid_dates() {
     if date -u -d "-1 day" +%Y >/dev/null 2>&1; then
         onix_valid_from=$(date -u -d "-1 day" +"%Y-%m-%dT%H:%M:%S.000Z")
@@ -896,7 +825,7 @@ onix_valid_dates() {
     fi
 }
 
-# onix_emit_participant_info INDEX ROLE - registration details of one subscriber.
+# onix_emit_participant_info INDEX ROLE
 onix_emit_participant_info() {
     local i=$1 role=$2 id url key_id spub epub
     if [[ "$role" == "BAP" ]]; then
@@ -918,8 +847,6 @@ onix_emit_participant_info() {
     fi
 }
 
-# onix_emit_registration_info - what the operator must register with each
-# registry. Onboarding with an external registry is out-of-band.
 onix_emit_registration_info() {
     local i
     onix_valid_dates
@@ -929,19 +856,18 @@ onix_emit_registration_info() {
         echo ""
         if [[ "${onix_net_registry_type[i]}" == "dedi" ]]; then
             echo "Network ${onix_net_name[i]:-$((i + 1))}: Beckn One / DeDi registry ($ONIX_DEDI_REGISTRY_URL)${onix_net_network_ids[i]:+, networks: ${onix_net_network_ids[i]}}"
-            echo "  Register each subscriber below with the network's DeDi registry (Beckn One) and make sure"
-            echo "  the record ID matches unique_key_id (update keyId in adapter.yaml if the registry assigns a different one)."
+            echo "  Register each subscriber below in the DeDi registry. If its record ID differs from"
+            echo "  unique_key_id, set keyId in adapter.yaml to the record ID."
         else
             echo "Network ${onix_net_name[i]:-$((i + 1))}: registry ${onix_net_registry_url[i]}"
             echo "  Register each subscriber below with the registry (e.g. POST ${onix_net_registry_url[i]}/register) and"
-            echo "  ask the registry administrator to approve / subscribe it."
+            echo "  ask the registry administrator to approve it."
         fi
         if onix_has_bap; then onix_emit_participant_info "$i" BAP; fi
         if onix_has_bpp; then onix_emit_participant_info "$i" BPP; fi
     done
 }
 
-# onix_emit_compose_env - environment for docker-compose-onix-node.yml.
 onix_emit_compose_env() {
     cat <<EOF
 # Generated by install/beckn-onix.sh. Used as:
@@ -956,9 +882,8 @@ EOF
     fi
 }
 
-# onix_confirm_config_replacement - ask, before any input is collected,
-# whether an existing ONIX node configuration may be replaced (it is backed up
-# when the new one is written). Fails if the user declines.
+# Asked before any input is collected; fails if the user keeps the existing
+# configuration.
 onix_confirm_config_replacement() {
     onix_replace_confirmed=0
     [[ -e "$ONIX_NODE_CONFIG_DIR" ]] || return 0
@@ -971,8 +896,8 @@ onix_confirm_config_replacement() {
     return 1
 }
 
-# onix_prepare_config_dir - create ONIX_NODE_CONFIG_DIR, moving an existing
-# configuration to a timestamped backup once replacement is confirmed.
+# Moves an existing configuration to a timestamped backup, asking again if it
+# appeared after onix_confirm_config_replacement ran.
 onix_prepare_config_dir() {
     local backup
     if [[ -e "$ONIX_NODE_CONFIG_DIR" ]]; then
@@ -986,8 +911,6 @@ onix_prepare_config_dir() {
     mkdir -p "$ONIX_NODE_CONFIG_DIR"
 }
 
-# onix_write_config - write adapter.yaml, routing files, registration info and
-# the compose environment into ONIX_NODE_CONFIG_DIR.
 onix_write_config() {
     local i role kind lrole name
     onix_prepare_config_dir || return 1
@@ -997,7 +920,7 @@ onix_write_config() {
         for role in BAP BPP; do
             if [[ "$role" == "BAP" ]] && ! onix_has_bap; then continue; fi
             if [[ "$role" == "BPP" ]] && ! onix_has_bpp; then continue; fi
-            lrole=$(printf '%s' "$role" | tr '[:upper:]' '[:lower:]')
+            lrole=$(onix_lower "$role")
             for kind in Receiver Caller; do
                 name=$(onix_module_name "$i" "${lrole}Txn$kind")
                 onix_emit_routing "$i" "$role" "$kind" >"$ONIX_NODE_CONFIG_DIR/routing-$name.yaml" || return 1
@@ -1009,12 +932,8 @@ onix_write_config() {
     echo "${GREEN}✓ ONIX node configuration written to $ONIX_NODE_CONFIG_DIR${NC}"
 }
 
-# ---------------------------------------------------------------------------
-# Legacy registry registration (optional)
-# ---------------------------------------------------------------------------
-
-# onix_legacy_registry_login REGISTRY_URL USER PASSWORD - prints the API key.
-# Login lives next to the subscriber API: <base>/login for <base>/subscribers.
+# onix_legacy_registry_login REGISTRY_URL USER PASSWORD: prints the API key.
+# The login API is <base>/login next to <base>/subscribers.
 onix_legacy_registry_login() {
     local login_url="${1%/subscribers}/login" body response api_key
     body=$(jq -n --arg n "$2" --arg p "$3" '{Name: $n, Password: $p}') || return 1
@@ -1030,7 +949,7 @@ onix_legacy_registry_login() {
     printf '%s' "$api_key"
 }
 
-# onix_legacy_register INDEX ROLE API_KEY - POST <registry>/register.
+# onix_legacy_register INDEX ROLE API_KEY: POST <registry>/register.
 onix_legacy_register() {
     local i=$1 role=$2 api_key=$3 id url key_id spub epub body status
     if [[ "$role" == "BAP" ]]; then
@@ -1054,14 +973,14 @@ onix_legacy_register() {
     return 1
 }
 
-# onix_offer_legacy_registration - for networks with a /lookup registry, offer
-# to create the subscriber entries with the operator's registry credentials.
+# Offers to create the subscriber entries in each /lookup registry with the
+# operator's registry credentials.
 onix_offer_legacy_registration() {
     local i user password api_key
     for ((i = 0; i < onix_net_count; i++)); do
         [[ "${onix_net_registry_type[i]}" == "legacy" ]] || continue
         echo ""
-        if ! onix_prompt_yes_no "Create the subscriber entries in ${onix_net_registry_url[i]} now with your registry credentials?" N; then
+        if ! onix_prompt_yes_no "Register the subscribers in ${onix_net_registry_url[i]} now (needs your registry credentials)?" N; then
             continue
         fi
         onix_prompt user "Registry username"
@@ -1076,28 +995,22 @@ onix_offer_legacy_registration() {
     return 0
 }
 
-# ---------------------------------------------------------------------------
-# Runtime
-# ---------------------------------------------------------------------------
-
 onix_compose() {
     COMPOSE_IGNORE_ORPHANS=1 docker compose --env-file "$ONIX_NODE_CONFIG_DIR/$ONIX_NODE_ENV_FILE_NAME" -f "$ONIX_NODE_COMPOSE_FILE" "$@"
 }
 
-# onix_start_node - start Redis and the adapter and wait for /health.
 onix_start_node() {
-    local attempt health_host=127.0.0.1 running
+    local attempt running
     echo "${GREEN}................Starting Redis and ONIX adapter................${NC}"
     # The adapter reads adapter.yaml only at start-up, and "up -d" leaves a
-    # running container alone when only its mounted configuration changed, so
-    # restart an adapter that was already running (re-run of the installer).
+    # running container alone when only its mounted files changed.
     running=$(docker ps -q --filter "name=^onix-node$" 2>/dev/null)
     if ! onix_compose up -d || { [[ -n "$running" ]] && ! onix_compose restart onix-node; }; then
         echo "${RED}Error: failed to start the ONIX node containers.${NC}"
         return 1
     fi
     for ((attempt = 1; attempt <= 15; attempt++)); do
-        if curl -sf "http://$health_host:$onix_host_port/health" >/dev/null 2>&1; then
+        if curl -sf "http://127.0.0.1:$onix_host_port/health" >/dev/null 2>&1; then
             echo "${GREEN}✓ ONIX adapter is healthy on port $onix_host_port${NC}"
             return 0
         fi
@@ -1108,25 +1021,18 @@ onix_start_node() {
     return 1
 }
 
-# onix_print_next_steps - endpoints, proxy/TLS guidance and management commands.
 onix_print_next_steps() {
-    local i lrole env_file="$ONIX_NODE_CONFIG_DIR/$ONIX_NODE_ENV_FILE_NAME"
+    local i env_file="$ONIX_NODE_CONFIG_DIR/$ONIX_NODE_ENV_FILE_NAME"
     echo ""
     echo "${BLUE}Expose ONLY these paths publicly (reverse proxy with TLS -> http://<this host>:$onix_host_port):${NC}"
     for ((i = 0; i < onix_net_count; i++)); do
-        for lrole in bap bpp; do
-            if [[ "$lrole" == "bap" ]] && ! onix_has_bap; then continue; fi
-            if [[ "$lrole" == "bpp" ]] && ! onix_has_bpp; then continue; fi
-            echo "  ${onix_net_prefix[i]}/$lrole/receiver/"
-        done
+        if onix_has_bap; then echo "  ${onix_net_prefix[i]}/bap/receiver/"; fi
+        if onix_has_bpp; then echo "  ${onix_net_prefix[i]}/bpp/receiver/"; fi
     done
     echo "${BLUE}Your application calls these private endpoints (http://onix-node:$ONIX_NODE_HTTP_PORT on the beckn_network Docker network, or http://127.0.0.1:$onix_host_port):${NC}"
     for ((i = 0; i < onix_net_count; i++)); do
-        for lrole in bap bpp; do
-            if [[ "$lrole" == "bap" ]] && ! onix_has_bap; then continue; fi
-            if [[ "$lrole" == "bpp" ]] && ! onix_has_bpp; then continue; fi
-            echo "  ${onix_net_prefix[i]}/$lrole/caller/<action>"
-        done
+        if onix_has_bap; then echo "  ${onix_net_prefix[i]}/bap/caller/<action>"; fi
+        if onix_has_bpp; then echo "  ${onix_net_prefix[i]}/bpp/caller/<action>"; fi
     done
     echo ""
     echo "Configuration : $ONIX_NODE_CONFIG_DIR/adapter.yaml (contains private keys)"

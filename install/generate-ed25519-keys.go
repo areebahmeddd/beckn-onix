@@ -4,10 +4,8 @@ package main
 To run this code and generate a new key set, use the following command:
 go run install/generate-ed25519-keys.go
 
-It prints an Ed25519 signing key pair and an X25519 encryption key pair as
-raw, base64-encoded keys in the format the simplekeymanager plugin reads
-(signingPrivateKey is the 32-byte Ed25519 seed). install/beckn-onix.sh uses
-this as a fallback key generator when OpenSSL cannot generate these keys.
+It prints raw base64 Ed25519 (signing) and X25519 (encryption) key pairs in the
+simplekeymanager format; signingPrivateKey is the 32-byte Ed25519 seed.
 */
 
 import (
@@ -30,7 +28,6 @@ func main() {
 	// We need to extract just the seed (first 32 bytes)
 	seed := privateKey[:ed25519.SeedSize]
 
-	// Generate a new X25519 key pair for encryption.
 	encrPrivateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		log.Fatal("Failed to generate encryption key pair:", err)

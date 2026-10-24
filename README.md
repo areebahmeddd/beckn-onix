@@ -255,7 +255,7 @@ This automated script will:
 docker build -f Dockerfile.adapter-with-plugins -t beckn-onix:latest .
 ```
 
-To join an existing Beckn network with an ONIX adapter (BAP, BPP or both), run the interactive installer and choose option 1. It generates keys, writes the adapter configuration to `config/onix-node/`, prints the details to register with the network's registry and starts the adapter with its own Redis:
+To join an existing Beckn network with an ONIX adapter (BAP, BPP or both), run the interactive installer and choose option 1. It generates keys, writes `config/onix-node/`, prints the registry registration details and starts the adapter with its own Redis:
 
 ```bash
 cd beckn-onix/install

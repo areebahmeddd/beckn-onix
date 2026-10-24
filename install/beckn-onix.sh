@@ -982,9 +982,7 @@ install_beckn_one_adapter() {
     echo "  - Redis: localhost:6379"
 }
 
-# Function to set up an ONIX adapter node from the collected onix_* inputs:
-# generate keys, write config/onix-node/, print the registry registration
-# details and start the adapter with its own Redis.
+# Function to set up the ONIX adapter node from the collected onix_* inputs
 setup_onix_node() {
     onix_print_summary
     if ! onix_prompt_yes_no "Proceed with this setup?" Y; then
@@ -1016,8 +1014,7 @@ setup_onix_node() {
 # Function to join an existing network with an ONIX adapter (Option 1)
 join_existing_network() {
     echo "${GREEN}................Joining an existing network with an ONIX adapter................${NC}"
-    echo "This configures an ONIX adapter for an existing network's registry. Registering the node"
-    echo "with that registry happens outside this script; the details to register are printed at the end."
+    echo "Registering the node with the network's registry happens outside this script; the details are printed at the end."
     onix_reset_state
     onix_collect_role with_gateway
     if onix_role_is GATEWAY; then
@@ -1038,7 +1035,7 @@ join_existing_network() {
     setup_onix_node
 }
 
-# Allow the functions above to be sourced (e.g. by tests) without running the installer.
+# When sourced (e.g. by tests), only define the functions.
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
     return 0
 fi
