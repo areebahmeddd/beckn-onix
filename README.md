@@ -128,8 +128,8 @@ The **Beckn Protocol** is an open protocol that enables location-aware, local co
 - **KeyManager**: HashiCorp Vault integration for production key management
 - **SimpleKeyManager**: Embedded key management for local development (no external dependencies)
 - **Publisher**: RabbitMQ message publishing for asynchronous processing
-- **Encrypter**: AES encryption for sensitive data protection
-- **Decrypter**: AES decryption for encrypted data processing
+- **Encrypter**: Optional message-level payload encryption for counterparties that publish an `encr_public_key` (`encrypt` step). See [plugin docs](pkg/plugin/implementation/encrypter/README.md).
+- **Decrypter**: Decryption of encrypted inbound payloads (`decrypt` step). See [plugin docs](pkg/plugin/implementation/decrypter/README.md).
 - **ReqPreprocessor**: Request preprocessing (UUID generation, headers)
 - **ReqMapper**: Step plugin (id: `reqmapper`) used by the handler's `transformPayload` step to transform payloads at an explicit point in the pipeline. Delegates execution to an injected `Translator` plugin instead of owning JSONata directly.
 - **JSONataTranslator**: `Translator` plugin (id: `jsonatatranslator`) that compiles and evaluates JSONata expressions. Used by `reqmapper` and `schemaversionmediator` by default. See [plugin docs](pkg/plugin/implementation/jsonatatranslator/README.md).
