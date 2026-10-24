@@ -17,9 +17,13 @@ steps:
   - sign
 ```
 
-If you omit the plugin and the step, encryption stays disabled. Even when it is enabled, a message goes out unencrypted in either of these cases:
-- there's no single counterparty, as with a broadcast `search`;
-- the counterparty's registry record has no `encr_public_key`.
+If you omit the plugin and the step, encryption stays disabled. When it is enabled, encryption is opportunistic and per recipient. A message goes out in plaintext when:
+- there's no single recipient, as with a broadcast `search`;
+- the recipient has no discoverable key: its registry record has no `encr_public_key`, or the registry doesn't know it or can't look it up (e.g. `dediregistry` without a key id).
+
+A registry outage (unreachable, timeout, invalid response) fails the request rather than sending plaintext.
+
+On `dediregistry`, lookups need the recipient's key id, which the step takes from earlier messages of the same transaction. Encryption therefore needs transaction history in a `payloadStore`, with `storePayload` placed after `validateSign` on the receiving module.
 
 The full behaviour is in [CONFIG.md, Encrypter / Decrypter](../../../../CONFIG.md#17-encrypter--decrypter-plugins-optional-message-level-encryption), including the on-the-wire envelope, step ordering, key provisioning and registry requirements.
 

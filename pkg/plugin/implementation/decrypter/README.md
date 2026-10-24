@@ -19,7 +19,7 @@ steps:
   - signAck
 ```
 
-The step only acts on bodies that carry the top-level `encrypted` envelope. Unencrypted messages pass through unchanged, so senders that don't encrypt keep working. The step reads the sender's `encr_public_key` from the registry via `keyManager.LookupNPKeys(senderId, senderKeyId)`. It also checks that:
+The step only acts on bodies that carry the top-level `encrypted` envelope. Encryption is opportunistic: senders encrypt only for recipients whose key they can discover. Unencrypted messages therefore pass through unchanged, so senders that don't encrypt keep working. The step reads the sender's `encr_public_key` from the registry via `keyManager.LookupNPKeys(senderId, senderKeyId)`. It also checks that:
 - the envelope is addressed to this subscriber and key;
 - the request signer (`Authorization` `keyId` subscriber and key) is the envelope's sender.
 
