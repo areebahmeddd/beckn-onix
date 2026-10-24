@@ -3,9 +3,11 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin"
@@ -19,10 +21,19 @@ type subscribingRegistry struct {
 	result *model.SubscribeResult
 	err    error
 	calls  []*model.Subscription
+	// block makes Subscribe wait for its context to end, like a hung registry.
+	block       bool
+	deadline    time.Time
+	hasDeadline bool
 }
 
-func (r *subscribingRegistry) Subscribe(_ context.Context, req *model.Subscription) (*model.SubscribeResult, error) {
+func (r *subscribingRegistry) Subscribe(ctx context.Context, req *model.Subscription) (*model.SubscribeResult, error) {
 	r.calls = append(r.calls, req)
+	r.deadline, r.hasDeadline = ctx.Deadline()
+	if r.block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	return r.result, r.err
 }
 
@@ -162,6 +173,59 @@ func TestSubscribeToRegistry_RuntimeFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A registry plugin that has no subscribe settings of its own is a
+// configuration error, so it fails startup even when subscribe is not required.
+func TestSubscribeToRegistry_RegistryNotConfiguredFailsStartup(t *testing.T) {
+	reg := &subscribingRegistry{err: fmt.Errorf("set subscribeURL: %w", definition.ErrSubscribeNotConfigured)}
+	cfg := subscribeTestConfig()
+	cfg.Subscribe.Required = false
+
+	err := subscribeToRegistry(context.Background(), reg, subscribeTestKM(), cfg)
+	if !errors.Is(err, definition.ErrSubscribeNotConfigured) {
+		t.Fatalf("subscribeToRegistry() error = %v, want ErrSubscribeNotConfigured", err)
+	}
+	if !strings.Contains(err.Error(), "invalid subscribe configuration") {
+		t.Errorf("error %q should be reported as a configuration error", err)
+	}
+}
+
+// A hung registry must not hold up startup past subscribe.timeout.
+func TestSubscribeToRegistry_Timeout(t *testing.T) {
+	t.Run("not required: startup continues", func(t *testing.T) {
+		cfg := subscribeTestConfig()
+		cfg.Subscribe.Timeout = 20 * time.Millisecond
+		start := time.Now()
+		if err := subscribeToRegistry(context.Background(), &subscribingRegistry{block: true}, subscribeTestKM(), cfg); err != nil {
+			t.Fatalf("subscribeToRegistry() error = %v, want startup to continue", err)
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Errorf("subscribeToRegistry() took %v, want it bounded by subscribe.timeout", elapsed)
+		}
+	})
+	t.Run("required: startup fails", func(t *testing.T) {
+		cfg := subscribeTestConfig()
+		cfg.Subscribe.Timeout = 20 * time.Millisecond
+		cfg.Subscribe.Required = true
+		err := subscribeToRegistry(context.Background(), &subscribingRegistry{block: true}, subscribeTestKM(), cfg)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("subscribeToRegistry() error = %v, want context.DeadlineExceeded", err)
+		}
+	})
+	t.Run("unset uses the default", func(t *testing.T) {
+		reg := &subscribingRegistry{result: &model.SubscribeResult{Status: model.SubscribeUnchanged}}
+		before := time.Now()
+		if err := subscribeToRegistry(context.Background(), reg, subscribeTestKM(), subscribeTestConfig()); err != nil {
+			t.Fatalf("subscribeToRegistry() error = %v", err)
+		}
+		if !reg.hasDeadline {
+			t.Fatal("Subscribe context has no deadline")
+		}
+		if got := reg.deadline.Sub(before); got <= 0 || got > defaultSubscribeTimeout+time.Second {
+			t.Errorf("Subscribe deadline in %v, want about %v", got, defaultSubscribeTimeout)
+		}
+	})
 }
 
 func TestSubscribeToRegistry_ReportsUnusableRecord(t *testing.T) {

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"testing"
+	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin"
 	"github.com/beckn-one/beckn-onix/pkg/telemetry"
@@ -135,9 +136,10 @@ subscribe:
   url: https://bap.example.com/bap/receiver
   type: BAP
   required: true
+  timeout: 30s
 `), &c))
 	require.NotNil(t, c.Subscribe)
-	assert.Equal(t, SubscribeConfig{URL: "https://bap.example.com/bap/receiver", Type: "BAP", Required: true}, *c.Subscribe)
+	assert.Equal(t, SubscribeConfig{URL: "https://bap.example.com/bap/receiver", Type: "BAP", Required: true, Timeout: 30 * time.Second}, *c.Subscribe)
 
 	var unset Config
 	require.NoError(t, yaml.Unmarshal([]byte("role: bap\n"), &unset))

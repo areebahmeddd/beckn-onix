@@ -150,7 +150,7 @@ func (c *DeDiRegistryClient) Subscribe(ctx context.Context, req *model.Subscript
 
 	sc := c.config.Subscribe
 	if sc == nil {
-		return nil, internalErr(errors.New("DeDi subscribe is not configured: set subscribeURL and the other subscribe* keys in the registry plugin config"))
+		return nil, internalErr(fmt.Errorf("%w: set subscribeURL and the other subscribe* keys in the dediregistry plugin config", definition.ErrSubscribeNotConfigured))
 	}
 	if req == nil {
 		return nil, model.NewBadReqErr(codeCtxMissingField, errors.New("subscription is required for DeDi subscribe"))

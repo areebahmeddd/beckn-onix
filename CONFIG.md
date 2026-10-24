@@ -706,22 +706,23 @@ modules:
 - the signing and encryption **public** keys: this module's `keyManager` keyset for that ID;
 - the callback URL and type: from this block.
 
-Where the record is written is configured on the registry plugin. Today only [`dediregistry`](#2-dediregistry-plugin) supports it; see its `subscribe*` keys. Put the block on the module whose path is your **receiver** endpoint.
+Where the record is written is configured on the registry plugin. Today only [`dediregistry`](#2-dediregistry-plugin) supports it; see its `subscribe*` keys. Put the block on the module whose path is your **receiver** endpoint, and on only one module per registry record: modules subscribe one after another at startup, so a second module writing the same record with a different `url` would overwrite the first on every start.
 
 | Field | Required | Description |
 |---|---|---|
 | `url` | Yes | Callback URL to publish: your receiver endpoint, absolute `http(s)` |
 | `type` | For roles other than `bap`/`bpp` | Participant type to publish (`BAP`, `BPP`, `CS`, `DS`, `CDS`). Defaults to the upper-cased `role` |
 | `required` | No (default `false`) | `true` fails startup when subscribing fails. With `false`, the failure is logged at Error and the adapter starts anyway |
+| `timeout` | No (default `60s`) | Duration that bounds the whole subscribe call, retries included. When it runs out, the call fails like any other subscribe failure (see `required`) |
 
 A configuration that cannot work fails startup whatever `required` says. That covers:
-- no `registry`, or one that cannot subscribe;
+- no `registry`, or one that cannot subscribe or has no subscribe settings of its own (for `dediregistry`, no `subscribeURL`);
 - no `keyManager`;
 - no `subscriberId`;
 - a bad `url`;
 - a missing `type` for a role other than `bap`/`bpp`.
 
-Startup waits for the registry call, bounded by the registry plugin's `timeout`/`retry_*` settings. On success, the adapter logs the outcome (`created` / `updated` / `unchanged`) and the registry's record ID. It warns when that record ID differs from the key manager's key ID, because DeDi serves your signing key under the record ID. It also warns when the record is not `live`.
+Startup waits for the registry call, for at most `timeout`. The registry plugin's own `timeout`/`retry_*` settings apply within that bound. On success, the adapter logs the outcome (`created` / `updated` / `unchanged`) and the registry's record ID. It warns when that record ID differs from the key manager's key ID, because DeDi serves your signing key under the record ID. It also warns when the record is not `live`.
 
 ```yaml
 handler:

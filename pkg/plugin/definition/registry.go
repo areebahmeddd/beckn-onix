@@ -2,9 +2,15 @@ package definition
 
 import (
 	"context"
+	"errors"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 )
+
+// ErrSubscribeNotConfigured is the sentinel a RegistrySubscriber returns (wrapped, checked
+// with errors.Is) when its own configuration does not say where to write the record. Callers
+// treat it as a configuration error rather than a registry outage.
+var ErrSubscribeNotConfigured = errors.New("registry plugin is not configured to subscribe")
 
 // RegistryLookup resolves Beckn subscriber identities using generic Beckn protocol parameters.
 // Inputs are subscriber-ID and key-ID as carried in the Beckn Authorization header.

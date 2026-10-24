@@ -3,6 +3,7 @@ package dediregistry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/testutil"
 )
 
@@ -557,6 +559,9 @@ func TestSubscribeNotConfigured(t *testing.T) {
 
 	_, err := client.Subscribe(context.Background(), testSubscription())
 	testutil.RequireCodedErr(t, err, http.StatusInternalServerError, codeNetInternalError)
+	if !errors.Is(err, definition.ErrSubscribeNotConfigured) {
+		t.Errorf("error %v should wrap definition.ErrSubscribeNotConfigured, so the handler fails startup on it", err)
+	}
 	if !strings.Contains(err.Error(), "subscribeURL") {
 		t.Errorf("error %q should say how to enable subscribe", err)
 	}

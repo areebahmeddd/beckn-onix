@@ -146,7 +146,7 @@ The result is a `model.SubscribeResult{Status, RecordID, State}`. The **record I
 
 | Failure | Code | HTTP |
 |---------|------|------|
-| `subscribeURL` not configured | `NET_INTERNAL_ERROR` | 500 |
+| `subscribeURL` not configured (wraps `definition.ErrSubscribeNotConfigured`, so a handler `subscribe` block fails startup on it) | `NET_INTERNAL_ERROR` | 500 |
 | Missing `subscriber_id`, `url`, `type` or `signing_public_key` | `CTX_MISSING_FIELD` | 400 |
 | DeDi rejected the API key (401, 402, 403). The message names `DEDI_API_KEY` and the namespace | `NET_INTERNAL_ERROR` | 500 |
 | DeDi rejected the record (other 4xx, e.g. a schema violation) | `NET_INTERNAL_ERROR` | 500 |
@@ -154,7 +154,7 @@ The result is a `model.SubscribeResult{Status, RecordID, State}`. The **record I
 | Lookup or write: timeout / unreachable / 5xx or 429 after retries | `NET_TIMEOUT` / `NET_DOWNSTREAM_UNAVAILABLE` | 504 / 503 |
 | Lookup returned an unusable 200 body | `NET_DOWNSTREAM_INVALID_RESPONSE` † | 502 |
 
-A failed read-back after a successful write is logged and reported as an empty `RecordID`/`State`, not as an error. Writes are retried like lookups. A create retried after a 5xx that DeDi had in fact applied can therefore fail as a duplicate; the next startup then finds the record and updates it. Each call runs in a `registry subscribe` span carrying the subscriber ID, outcome status and record ID.
+A failed read-back after a successful write is logged and reported as an empty `RecordID`/`State`, not as an error. Writes are retried like lookups. A create retried after a 5xx that DeDi had in fact applied can therefore fail as a duplicate; the next startup then finds the record and updates it. The same applies when several replicas start at once and all find no record: one create wins and the others fail for that start. Each call runs in a `registry subscribe` span carrying the subscriber ID, outcome status and record ID.
 
 ## Usage Context
 

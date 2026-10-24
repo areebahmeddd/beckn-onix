@@ -6,21 +6,28 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 )
 
+// defaultSubscribeTimeout bounds a subscribe call when subscribe.timeout is
+// unset. The registry plugin's own client may have no timeout, and module
+// startup runs on a context without a deadline, so without this bound a hung
+// registry would keep the adapter from ever listening.
+const defaultSubscribeTimeout = time.Minute
+
 // subscribeToRegistry publishes the module's subscriber record to its
 // registry plugin when cfg.Subscribe is set, and does nothing otherwise.
 //
 // A configuration that cannot work (no registry, a registry that cannot
-// subscribe, no key manager, no subscriberId, a bad callback URL or type)
-// always fails startup. A failure while subscribing (key lookup or the
-// registry call) fails startup only when subscribe.required is true;
-// otherwise it is logged and startup continues, so a registry outage cannot
-// keep the adapter down.
+// subscribe or has no subscribe settings, no key manager, no subscriberId, a
+// bad callback URL or type) always fails startup. A failure while subscribing
+// (key lookup or the registry call, bounded by subscribe.timeout) fails
+// startup only when subscribe.required is true; otherwise it is logged and
+// startup continues, so a registry outage cannot keep the adapter down.
 func subscribeToRegistry(ctx context.Context, registry definition.RegistryLookup, km definition.KeyManager, cfg *Config) error {
 	sc := cfg.Subscribe
 	if sc == nil {
@@ -35,8 +42,18 @@ func subscribeToRegistry(ctx context.Context, registry definition.RegistryLookup
 		return fmt.Errorf("invalid subscribe configuration: %w", err)
 	}
 
-	result, keyID, err := subscribe(ctx, subscriber, km, cfg.SubscriberID, sc.URL, participantType)
+	timeout := sc.Timeout
+	if timeout <= 0 {
+		timeout = defaultSubscribeTimeout
+	}
+	subCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	result, keyID, err := subscribe(subCtx, subscriber, km, cfg.SubscriberID, sc.URL, participantType)
 	if err != nil {
+		if errors.Is(err, definition.ErrSubscribeNotConfigured) {
+			return fmt.Errorf("invalid subscribe configuration: %w", err)
+		}
 		if sc.Required {
 			return fmt.Errorf("failed to subscribe %s to the registry: %w", cfg.SubscriberID, err)
 		}

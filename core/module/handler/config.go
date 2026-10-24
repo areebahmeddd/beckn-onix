@@ -218,4 +218,8 @@ type SubscribeConfig struct {
 	// is logged and the adapter starts anyway, so a registry outage cannot
 	// keep it down.
 	Required bool `yaml:"required,omitempty"`
+	// Timeout bounds the whole subscribe call, retries included, so a slow
+	// or hung registry cannot hold up startup. Zero or negative means
+	// defaultSubscribeTimeout.
+	Timeout time.Duration `yaml:"timeout,omitempty"`
 }
