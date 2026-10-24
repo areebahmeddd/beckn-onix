@@ -2,7 +2,7 @@ package catalogcrawler
 
 // instrumentation.go — OpenTelemetry spans and plugin metrics for the
 // crawler's own operations (registry lookups, poll/sync/park-sweep ticks,
-// queue claims, on-demand crawls). Purely additive to the slog logging these
+// queue syncs, on-demand crawls). Purely additive to the slog logging these
 // paths already do: every operation still logs exactly what it did before,
 // it now also emits a span and records onix_plugin_execution_duration_seconds
 // / onix_plugin_errors_total (pkg/telemetry) so crawler failures reach
@@ -40,8 +40,8 @@ const (
 // with spanNamePrefix) the span name.
 const (
 	opPollTick       = "poll_tick"       // one scheduled Params.PollIndexes pass
-	opSyncTick       = "sync_tick"       // one scheduled queue drain (span only -- its queue_claim children carry the metrics)
-	opQueueClaim     = "queue_claim"     // one Params.SyncNext call: claim the next queued item and settle it
+	opSyncTick       = "sync_tick"       // one scheduled queue drain (span only -- its sync_next children carry the metrics)
+	opSyncNext       = "sync_next"       // one Params.SyncNext call: claim the next queued item and settle it
 	opParkSweep      = "park_sweep"      // one scheduled Params.RequeueOrAbandonParked pass
 	opRegistryLookup = "registry_lookup" // one RegistryMetadataLookup.QueryByNetwork call for one network
 	opOnDemandCrawl  = "on_demand_crawl" // one CrawlRegistry-triggered PollIndexes pass
@@ -57,7 +57,7 @@ const (
 	// discovery inputs (registry networks or discovery sources) failed and
 	// were skipped -- see registryDiscoverer.Discover / multiSource.Discover.
 	statusPartialFailure = "partial_failure"
-	// statusEmpty: a queue claim found nothing to claim (the normal end of
+	// statusEmpty: a SyncNext call found nothing to claim (the normal end of
 	// every queue drain), not a failure.
 	statusEmpty = "empty"
 )

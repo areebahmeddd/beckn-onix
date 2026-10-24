@@ -81,7 +81,7 @@ Besides its structured logs (unchanged), the crawler emits OpenTelemetry spans a
 | `catalogcrawler.poll_tick` | new root per tick | `status`, `error_type`; a `partial discovery failure` event when some networks/sources failed |
 | `catalogcrawler.registry_lookup` | the `poll_tick` / `on_demand_crawl` span | `network_id`, `providers_found`, `status`, `error_type` |
 | `catalogcrawler.sync_tick` | new root per tick | `items_claimed` |
-| `catalogcrawler.queue_claim` | `sync_tick` | `claimed`, `status`, `error_type` |
+| `catalogcrawler.sync_next` | `sync_tick` | `claimed`, `status`, `error_type` |
 | `catalogcrawler.park_sweep` | new root per tick | `status`, `error_type` |
 | `catalogcrawler.on_demand_crawl` | new root; **linked** to the caller's span when `CrawlRegistry`'s ctx carries one (the `/crawl/trigger` endpoint starts no request span of its own today, so a triggered run usually has no link) | `run_id`, `network_ids`, `status`, `error_type` |
 
@@ -93,12 +93,12 @@ Every scheduler tick is its own trace (never one trace spanning the crawler's li
 |---|---|---|
 | `poll_tick`, `on_demand_crawl` | `success`, `partial_failure`, `error` | `partial_discovery` (some networks/sources failed, the pass carried on with the rest), `poll_failed`, `canceled`, `timeout` |
 | `registry_lookup` | `success`, `error` | `lookup_failed`, `canceled`, `timeout` |
-| `queue_claim` | `success`, `empty` (nothing to claim — not an error), `error` | `claim_failed`; for a claimed item whose sync failed, catalog-core's fault class (`signature`, `digest_mismatch`, `ssrf`, `oversize`, `decode`, `content_invalid`, `transient`, …), or `canceled`/`timeout` |
+| `sync_next` | `success`, `empty` (nothing to claim — not an error), `error` | `claim_failed`; for a claimed item whose sync failed, catalog-core's fault class (`signature`, `digest_mismatch`, `ssrf`, `oversize`, `decode`, `content_invalid`, `transient`, …), or `canceled`/`timeout` |
 | `park_sweep` | `success`, `error` | `sweep_failed`, `canceled`, `timeout` |
 
-`queue_claim` covers one `SyncNext` call: claiming the next queued item *and* syncing it. A `partial_failure` poll tick is the signal for a broken network hiding behind healthy ones — e.g. `sum by (error_type) (rate(onix_plugin_errors_total{plugin_id="catalogcrawler", operation="poll_tick"}[15m]))`. Note that the shared histogram's largest bucket is 1 s, so long poll ticks / syncs all land in `+Inf`; use `_sum / _count` for their mean duration.
+`sync_next` covers one `SyncNext` call — claiming the next queued item *and* syncing it — so it is named after that call rather than after the claim alone; a failed claim is `error_type=claim_failed`, a failed sync carries the sync's fault class. A `partial_failure` poll tick is the signal for a broken network hiding behind healthy ones — e.g. `sum by (error_type) (rate(onix_plugin_errors_total{plugin_id="catalogcrawler", operation="poll_tick"}[15m]))`. `onix_plugin_execution_duration_seconds` buckets run from 1 ms to 300 s, so both quick claims and multi-second poll ticks and syncs get usable quantiles.
 
-What `poll_tick` does *not* see: once discovery has returned, catalog-core's `PollIndexes` logs a failure to fetch or process an individual index (`crawlmanager: polling index failed`) and carries on, without reporting it to its caller — so a tick whose discovery fully succeeded is `success` even if some discovered indexes could not be fetched. Those failures are only in the logs (and, for catalogs already queued, in `queue_claim` errors). Also note a failed registry network is counted twice — once as a `registry_lookup` error and once in its tick's `partial_failure` — so filter `onix_plugin_errors_total` by `operation` rather than summing across operations.
+What `poll_tick` does *not* see: once discovery has returned, catalog-core's `PollIndexes` logs a failure to fetch or process an individual index (`crawlmanager: polling index failed`) and carries on, without reporting it to its caller — so a tick whose discovery fully succeeded is `success` even if some discovered indexes could not be fetched. Those failures are only in the logs (and, for catalogs already queued, in `sync_next` errors). Also note a failed registry network is counted twice — once as a `registry_lookup` error and once in its tick's `partial_failure` — so filter `onix_plugin_errors_total` by `operation` rather than summing across operations.
 
 ## On-demand crawl
 

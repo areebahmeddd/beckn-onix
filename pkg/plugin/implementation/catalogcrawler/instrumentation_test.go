@@ -420,14 +420,14 @@ func TestSyncTick_EmitsQueueClaimSpansAndMetrics(t *testing.T) {
 		t.Errorf("sync_tick items_claimed = %d, want 2", v.AsInt64())
 	}
 
-	claims := spansNamed(sr, opQueueClaim)
+	claims := spansNamed(sr, opSyncNext)
 	if len(claims) != 3 {
-		t.Fatalf("got %d queue_claim spans, want 3 (two claimed items + the empty claim ending the drain)", len(claims))
+		t.Fatalf("got %d sync_next spans, want 3 (two claimed items + the empty claim ending the drain)", len(claims))
 	}
 	var failedErrType string
 	for _, c := range claims {
 		if c.Parent().SpanID() != tick.SpanContext().SpanID() {
-			t.Errorf("queue_claim span parent = %v, want the sync_tick span", c.Parent().SpanID())
+			t.Errorf("sync_next span parent = %v, want the sync_tick span", c.Parent().SpanID())
 		}
 		if c.Status().Code == codes.Error {
 			v, _ := spanAttr(c, telemetry.AttrErrorType)
@@ -435,19 +435,19 @@ func TestSyncTick_EmitsQueueClaimSpansAndMetrics(t *testing.T) {
 		}
 	}
 	if failedErrType == "" || failedErrType == errTypeClaimFailed {
-		t.Fatalf("failed queue_claim error_type = %q, want a sync fault class", failedErrType)
+		t.Fatalf("failed sync_next error_type = %q, want a sync fault class", failedErrType)
 	}
 
 	for _, status := range []string{statusSuccess, statusEmpty, statusError} {
-		if got := durationCount(t, reader, opLabels(opQueueClaim, status, "")); got != 1 {
-			t.Errorf("queue_claim %s durations = %d, want 1", status, got)
+		if got := durationCount(t, reader, opLabels(opSyncNext, status, "")); got != 1 {
+			t.Errorf("sync_next %s durations = %d, want 1", status, got)
 		}
 	}
-	if got := errorCount(t, reader, opLabels(opQueueClaim, statusError, failedErrType)); got != 1 {
-		t.Errorf("queue_claim errors{error_type=%s} = %d, want 1", failedErrType, got)
+	if got := errorCount(t, reader, opLabels(opSyncNext, statusError, failedErrType)); got != 1 {
+		t.Errorf("sync_next errors{error_type=%s} = %d, want 1", failedErrType, got)
 	}
-	if got := errorCount(t, reader, map[attribute.Key]string{telemetry.AttrOperation: opQueueClaim}); got != 1 {
-		t.Errorf("queue_claim errors (any label) = %d, want 1 (an empty claim is not an error)", got)
+	if got := errorCount(t, reader, map[attribute.Key]string{telemetry.AttrOperation: opSyncNext}); got != 1 {
+		t.Errorf("sync_next errors (any label) = %d, want 1 (an empty claim is not an error)", got)
 	}
 }
 
@@ -457,12 +457,12 @@ func TestSyncTick_ClaimFailureIsCounted(t *testing.T) {
 	s := NewScheduler(crawlmanager.Params{Source: stubSource{}, Store: store}, SchedulerConfig{}, nil)
 	s.syncTick(context.Background())
 
-	claims := spansNamed(sr, opQueueClaim)
+	claims := spansNamed(sr, opSyncNext)
 	if len(claims) != 1 || claims[0].Status().Code != codes.Error {
-		t.Fatalf("queue_claim spans = %d (want 1, with Error status)", len(claims))
+		t.Fatalf("sync_next spans = %d (want 1, with Error status)", len(claims))
 	}
-	if got := errorCount(t, reader, opLabels(opQueueClaim, statusError, errTypeClaimFailed)); got != 1 {
-		t.Errorf("queue_claim claim_failed errors = %d, want 1", got)
+	if got := errorCount(t, reader, opLabels(opSyncNext, statusError, errTypeClaimFailed)); got != 1 {
+		t.Errorf("sync_next claim_failed errors = %d, want 1", got)
 	}
 }
 
@@ -596,4 +596,27 @@ func TestInstrumentation_SafeWithNoopProviders(t *testing.T) {
 	s.pollTick(ctx)
 	s.syncTick(ctx)
 	s.parkSweepTick(ctx)
+}
+
+// A poll tick or sync routinely takes seconds to minutes; its duration must
+// land in a finite histogram bucket, not +Inf, or its quantiles are useless.
+func TestRecordOperation_LongDurationLandsInFiniteBucket(t *testing.T) {
+	_, reader := setupTelemetry(t)
+	recordOperation(context.Background(), opPollTick, statusSuccess, "", 45*time.Second)
+
+	for _, m := range collectMetrics(t, reader) {
+		if m.Name != metricDuration {
+			continue
+		}
+		hist, ok := m.Data.(metricdata.Histogram[float64])
+		if !ok || len(hist.DataPoints) != 1 {
+			t.Fatalf("%s: got %T with unexpected data points", metricDuration, m.Data)
+		}
+		dp := hist.DataPoints[0]
+		if inf := dp.BucketCounts[len(dp.BucketCounts)-1]; inf != 0 {
+			t.Fatalf("45s sample landed in +Inf (bounds %v)", dp.Bounds)
+		}
+		return
+	}
+	t.Fatalf("no %s data recorded", metricDuration)
 }

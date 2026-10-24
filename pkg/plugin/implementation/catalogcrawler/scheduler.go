@@ -204,7 +204,7 @@ func (s *Scheduler) pollTick(ctx context.Context) {
 // itself errored -- either way there is nothing more to usefully do this
 // tick, and erroring on every loop iteration would spin hot on a wedged
 // store instead of waiting for the next tick). The tick's span parents one
-// queue_claim span per SyncNext call.
+// sync_next span per SyncNext call.
 func (s *Scheduler) syncTick(ctx context.Context) {
 	ctx, span := tracer().Start(ctx, spanNamePrefix+opSyncTick, trace.WithNewRoot())
 	itemsClaimed := 0
@@ -226,14 +226,14 @@ func (s *Scheduler) syncTick(ctx context.Context) {
 	}
 }
 
-// syncNext runs one SyncNext call under its own queue_claim span and reports
+// syncNext runs one SyncNext call under its own sync_next span and reports
 // whether an item was claimed. The outcome is: success (claimed and synced),
 // empty (nothing left to claim -- the normal end of a drain, not a failure),
 // or error -- either the claim itself failing (claim_failed), or a claimed
 // item's sync failing, classified by catalog-core's fault taxonomy
 // (syncErrorType).
 func (s *Scheduler) syncNext(ctx context.Context) bool {
-	ctx, op := startOperation(ctx, opQueueClaim)
+	ctx, op := startOperation(ctx, opSyncNext)
 	claimed, err := s.params.SyncNext(ctx)
 	op.span.SetAttributes(attrClaimed.Bool(claimed))
 	switch {
