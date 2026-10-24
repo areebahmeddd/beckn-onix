@@ -798,7 +798,7 @@ registry:
 - `retry_wait_min`: Minimum wait time between retries
 - `retry_wait_max`: Maximum wait time between retries
 
-When the module has a `cache` plugin, `Lookup` results are cached per registry URL, subscriber ID and key ID, so modules that use different registries can share one cache (for example one adapter that takes part in several networks).
+With a `cache` plugin, lookups are cached per registry URL, subscriber ID and key ID, so modules on different registries can safely share one cache.
 
 ---
 

@@ -423,7 +423,6 @@ func TestRegistryClient_Lookup_Cache(t *testing.T) {
 	})
 }
 
-// mapCache is an in-memory definition.Cache shared by several clients.
 type mapCache struct{ m map[string]string }
 
 func (c *mapCache) Get(ctx context.Context, key string) (string, error) {
@@ -439,10 +438,8 @@ func (c *mapCache) Set(ctx context.Context, key, value string, ttl time.Duration
 func (c *mapCache) Delete(ctx context.Context, key string) error { delete(c.m, key); return nil }
 func (c *mapCache) Clear(ctx context.Context) error              { c.m = map[string]string{}; return nil }
 
-// TestRegistryClient_Lookup_CacheIsPerRegistry checks that clients of different
-// registries sharing one cache (one adapter in several networks) do not serve
-// each other's cached records: a subscriber known only to registry A must not
-// be found through registry B.
+// A subscriber known only to registry A must not be found through registry B
+// when both clients share a cache.
 func TestRegistryClient_Lookup_CacheIsPerRegistry(t *testing.T) {
 	t.Parallel()
 
@@ -492,7 +489,7 @@ func TestRegistryClient_Lookup_CacheIsPerRegistry(t *testing.T) {
 		t.Errorf("registry B lookup returned registry A's cached record: %+v", got)
 	}
 	if registryBCalls != 1 {
-		t.Errorf("registry B was called %d times, want 1 (no cache hit from registry A)", registryBCalls)
+		t.Errorf("registry B was called %d times, want 1", registryBCalls)
 	}
 }
 

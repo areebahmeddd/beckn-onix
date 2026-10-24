@@ -128,20 +128,16 @@ func (c *RegistryClient) Subscribe(ctx context.Context, subscription *model.Subs
 	return nil
 }
 
-// lookupCacheKey is Lookup's cache key. It includes the registry URL so that
-// modules looking up different registries through one shared cache (e.g. one
-// adapter taking part in several networks) never serve each other's records:
-// a subscriber of one network must not be accepted by another network's
-// module from the cache. The parts are path-escaped, so they contain no "/"
-// and different URL/subscriber/key combinations cannot share a key.
+// lookupCacheKey includes the registry URL so modules on different registries
+// can share a cache without trusting each other's records. Parts are
+// path-escaped so no two combinations collide.
 func lookupCacheKey(registryURL, subscriberID, keyID string) string {
 	return fmt.Sprintf("registry_lookup_%s/%s/%s",
 		url.PathEscape(registryURL), url.PathEscape(subscriberID), url.PathEscape(keyID))
 }
 
 // Lookup calls the /lookup endpoint with retry and returns a slice of Subscription.
-// Results are cached per registry URL, subscriber ID and key ID (lookupCacheKey).
-// On a cache hit the network call is skipped entirely.
+// Results are cached under lookupCacheKey; a cache hit skips the network call.
 func (c *RegistryClient) Lookup(ctx context.Context, subscription *model.Subscription) ([]model.Subscription, error) {
 	cacheKey := lookupCacheKey(c.config.URL, subscription.SubscriberID, subscription.KeyID)
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
