@@ -267,8 +267,23 @@ func TestEncryption_RoundTrip_BAPToBPP(t *testing.T) {
 // TestNewStdHandler_EncryptionConfigErrors checks that the encryption steps
 // are validated at start-up.
 func TestNewStdHandler_EncryptionConfigErrors(t *testing.T) {
+	ctx := context.Background()
 	n := newEncTestNetwork(t, true)
-	mgr := encE2EPluginManager{registry: n.registry, km: n.bapKM, encrypter: stubEncrypter{}, decrypter: stubDecrypter{}}
+	sgn, _, err := signer.New(ctx, &signer.Config{})
+	if err != nil {
+		t.Fatalf("signer.New: %v", err)
+	}
+	sv, _, err := signvalidator.New(ctx, &signvalidator.Config{})
+	if err != nil {
+		t.Fatalf("signvalidator.New: %v", err)
+	}
+	mgr := encE2EPluginManager{registry: n.registry, km: n.bapKM, signer: sgn, validator: sv, encrypter: stubEncrypter{}, decrypter: stubDecrypter{}}
+	base := PluginCfg{Registry: cfg("registry"), KeyManager: cfg("km"), Signer: cfg("signer"), SignValidator: cfg("signvalidator")}
+	with := func(mutate func(p *PluginCfg)) PluginCfg {
+		p := base
+		mutate(&p)
+		return p
+	}
 	tests := []struct {
 		name    string
 		plugins PluginCfg
@@ -277,31 +292,37 @@ func TestNewStdHandler_EncryptionConfigErrors(t *testing.T) {
 	}{
 		{
 			name:    "encrypt without encrypter plugin",
-			plugins: PluginCfg{Registry: cfg("registry"), KeyManager: cfg("km")},
-			steps:   []string{"encrypt"},
+			plugins: base,
+			steps:   []string{"encrypt", "sign"},
 			wantErr: "Encrypter plugin not configured",
 		},
 		{
 			name:    "decrypt without decrypter plugin",
-			plugins: PluginCfg{Registry: cfg("registry"), KeyManager: cfg("km")},
-			steps:   []string{"decrypt"},
+			plugins: base,
+			steps:   []string{"validateSign", "decrypt"},
 			wantErr: "Decrypter plugin not configured",
 		},
 		{
 			name:    "encrypt after sign",
-			plugins: PluginCfg{Registry: cfg("registry"), KeyManager: cfg("km"), Encrypter: cfg("encrypter")},
+			plugins: with(func(p *PluginCfg) { p.Encrypter = cfg("encrypter") }),
 			steps:   []string{"sign", "encrypt"},
-			wantErr: `"encrypt" must come before "sign"`,
+			wantErr: `"encrypt" must be followed by "sign"`,
+		},
+		{
+			name:    "decrypt without validateSign",
+			plugins: with(func(p *PluginCfg) { p.Decrypter = cfg("decrypter") }),
+			steps:   []string{"decrypt"},
+			wantErr: `"validateSign" must come before "decrypt"`,
 		},
 		{
 			name:    "valid encrypt and decrypt",
-			plugins: PluginCfg{Registry: cfg("registry"), KeyManager: cfg("km"), Encrypter: cfg("encrypter"), Decrypter: cfg("decrypter")},
-			steps:   []string{"encrypt", "decrypt"},
+			plugins: with(func(p *PluginCfg) { p.Encrypter, p.Decrypter = cfg("encrypter"), cfg("decrypter") }),
+			steps:   []string{"encrypt", "sign", "validateSign", "decrypt"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewStdHandler(context.Background(), mgr, &Config{Plugins: tt.plugins, Steps: tt.steps, Role: model.RoleBAP}, "test")
+			_, err := NewStdHandler(ctx, mgr, &Config{Plugins: tt.plugins, Steps: tt.steps, Role: model.RoleBAP}, "test")
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)

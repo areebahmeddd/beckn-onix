@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
@@ -102,11 +103,13 @@ var plaintextSteps = []string{"validateSchema", "checkPolicy", "mediateSchema", 
 
 // validateEncryptionStepOrder rejects step lists in which "encrypt" or
 // "decrypt" are placed where they would break signing or plaintext-only
-// steps. Step lists without either step are always valid.
+// steps. The ciphertext carries no integrity protection of its own, so
+// "encrypt" requires a later "sign" and "decrypt" an earlier "validateSign".
+// Step lists without either step are always valid.
 func validateEncryptionStepOrder(steps []string) error {
 	if i := slices.Index(steps, "encrypt"); i >= 0 {
-		if j := slices.Index(steps, "sign"); j >= 0 && j < i {
-			return fmt.Errorf("invalid config: step \"encrypt\" must come before \"sign\" so the signature covers the encrypted payload")
+		if j := slices.Index(steps, "sign"); j < i {
+			return fmt.Errorf("invalid config: step \"encrypt\" must be followed by \"sign\" so the signature covers the encrypted payload")
 		}
 		for _, p := range plaintextSteps {
 			if j := slices.Index(steps, p); j > i {
@@ -115,7 +118,7 @@ func validateEncryptionStepOrder(steps []string) error {
 		}
 	}
 	if i := slices.Index(steps, "decrypt"); i >= 0 {
-		if j := slices.Index(steps, "validateSign"); j > i {
+		if j := slices.Index(steps, "validateSign"); j < 0 || j > i {
 			return fmt.Errorf("invalid config: step \"validateSign\" must come before \"decrypt\" so the signature is verified over the received payload")
 		}
 		for _, p := range plaintextSteps {
@@ -218,7 +221,7 @@ func (s *encryptStep) Run(ctx *model.StepContext) error {
 		// Fail closed: without the registry answer we cannot tell whether the
 		// recipient expects encryption, and silently downgrading to plaintext
 		// would defeat its opt-in.
-		return fmt.Errorf("encrypt: failed to look up encryption key for recipient %s: %w", recipientID, err)
+		return encryptFailure(fmt.Sprintf("encrypt: failed to look up encryption key for recipient %s", recipientID), err)
 	}
 	if recipient == nil {
 		log.Debugf(ctx, "encrypt: recipient %s has not published an encryption public key; sending unencrypted", recipientID)
@@ -241,7 +244,7 @@ func (s *encryptStep) Run(ctx *model.StepContext) error {
 	}
 	ciphertext, err := s.encrypter.Encrypt(ctx, string(plaintext), keyset.EncrPrivate, recipient.EncrPublicKey)
 	if err != nil {
-		return fmt.Errorf("encrypt: failed to encrypt payload for recipient %s: %w", recipientID, err)
+		return encryptFailure(fmt.Sprintf("encrypt: failed to encrypt payload for recipient %s", recipientID), err)
 	}
 	envelope, err := marshalJSON(&encryptedEnvelope{
 		Version:        encryptedEnvelopeVersion,
@@ -264,6 +267,21 @@ func (s *encryptStep) Run(ctx *model.StepContext) error {
 	ctx.Body = body
 	log.Debugf(ctx, "encrypt: payload encrypted for recipient %s (key %s)", recipientID, recipient.KeyID)
 	return nil
+}
+
+// encryptFailure wraps an error from the registry or the encrypter plugin.
+// Their 4xx classifications describe the recipient's registry record or a
+// key, not the request being sent (dediregistry, for example, reports a
+// lookup without a key id as AUT_SIGNATURE_INVALID), so returning them would
+// tell the calling application its own request is malformed or unauthorised.
+// Such errors are reported unclassified (500, full detail in the log); 5xx
+// classifications, e.g. registry unavailable, are kept.
+func encryptFailure(msg string, err error) error {
+	var coded *model.CodedErr
+	if errors.As(err, &coded) && coded.HTTPStatus() < http.StatusInternalServerError {
+		return fmt.Errorf("%s: %v", msg, err)
+	}
+	return fmt.Errorf("%s: %w", msg, err)
 }
 
 // lookupRecipient returns the first usable registry record of recipientID
@@ -379,7 +397,7 @@ func (s *decryptStep) Run(ctx *model.StepContext) error {
 	if env.RecipientID != ctx.SubID {
 		return model.NewBadReqErr("", fmt.Errorf("decrypt: payload is encrypted for %q, not for %q", env.RecipientID, ctx.SubID))
 	}
-	if err := checkEnvelopeSender(ctx, env.SenderID); err != nil {
+	if err := checkEnvelopeSender(ctx, &env); err != nil {
 		return err
 	}
 
@@ -424,22 +442,24 @@ func (s *decryptStep) Run(ctx *model.StepContext) error {
 	return nil
 }
 
-// checkEnvelopeSender binds the envelope to the request signer: when the
-// request carries an Authorization header, its keyId subscriber must be the
-// envelope's sender. This stops a participant from replaying someone else's
-// ciphertext under its own signature. Signature presence and validity are
-// validateSign's job, which runs before this step.
-func checkEnvelopeSender(ctx *model.StepContext, senderID string) error {
+// checkEnvelopeSender binds the envelope to the request signer: the
+// Authorization keyId (subscriber and key) must be the envelope's sender and
+// sender key. This stops a participant from replaying someone else's
+// ciphertext under its own signature, and makes the sender's encryption key
+// come from the same registry record validateSign authenticated. Signature
+// validity is validateSign's job, which start-up guarantees runs first.
+func checkEnvelopeSender(ctx *model.StepContext, env *encryptedEnvelope) error {
 	header := ctx.Request.Header.Get(model.AuthHeaderSubscriber)
 	if header == "" {
-		return nil
+		return model.NewSignValidationErr("AUT_SIGNATURE_MISSING", fmt.Errorf("decrypt: encrypted payload has no %s header", model.AuthHeaderSubscriber))
 	}
 	parsed, err := parseHeader(header)
 	if err != nil {
 		return model.NewSignValidationErr("", fmt.Errorf("decrypt: %w", err))
 	}
-	if parsed.SubscriberID != senderID {
-		return model.NewSignValidationErr("", fmt.Errorf("decrypt: envelope sender %q does not match signing subscriber %q", senderID, parsed.SubscriberID))
+	if parsed.SubscriberID != env.SenderID || parsed.UniqueID != env.SenderKeyID {
+		return model.NewSignValidationErr("", fmt.Errorf("decrypt: envelope sender %q (key %q) does not match signing subscriber %q (key %q)",
+			env.SenderID, env.SenderKeyID, parsed.SubscriberID, parsed.UniqueID))
 	}
 	return nil
 }

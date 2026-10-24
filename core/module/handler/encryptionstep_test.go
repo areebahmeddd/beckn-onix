@@ -195,6 +195,12 @@ func newEncTestNetwork(t *testing.T, bppPublishesEncrKey bool) *encTestNetwork {
 	}
 }
 
+// encTestAuthHeader returns an Authorization header whose keyId names the
+// given subscriber and key.
+func encTestAuthHeader(subscriberID, keyID string) string {
+	return strings.Replace(providerInitiatedAuthHeader(subscriberID), "|key-1|", "|"+keyID+"|", 1)
+}
+
 func encTestStepCtx(role model.Role, subID, body string) *model.StepContext {
 	req, _ := http.NewRequest(http.MethodPost, "/test/", strings.NewReader(body))
 	return &model.StepContext{
@@ -538,10 +544,52 @@ func TestEncryptStep_Run_RegistryErrorFailsClosed(t *testing.T) {
 	step, _ := newEncryptStep(stubEncrypter{err: errors.New("must not be called")}, n.bapKM, n.registry, nil)
 	ctx := encTestStepCtx(model.RoleBAP, encTestBAP, encTestBody)
 	err := step.Run(ctx)
-	// The registry's own classification is preserved.
+	// The registry's own 5xx classification is preserved.
 	assertCoded(t, err, http.StatusServiceUnavailable, "NET_DOWNSTREAM_UNAVAILABLE")
 	if string(ctx.Body) != encTestBody {
 		t.Error("body must not be sent in plaintext form after a failed lookup")
+	}
+}
+
+// A 4xx from the registry or encrypter describes the recipient's record or a
+// key, not the caller's request, so it must surface as an unclassified 500
+// rather than e.g. a 401 telling the application its own request is unsigned.
+func TestEncryptStep_Run_ClientErrorsFromDependenciesAreNotForwarded(t *testing.T) {
+	tests := []struct {
+		name    string
+		regErr  error
+		enc     definition.Encrypter
+		wantMsg string
+	}{
+		{
+			name:    "registry rejects lookup without key id",
+			regErr:  model.NewSignValidationErr("AUT_SIGNATURE_INVALID", errors.New("key_id is required for DeDi lookup")),
+			enc:     stubEncrypter{err: errors.New("must not be called")},
+			wantMsg: "key_id is required",
+		},
+		{
+			name:    "recipient published an invalid key",
+			enc:     stubEncrypter{err: model.NewBadReqErr("AUT_SIGNATURE_INVALID", errors.New("invalid public key"))},
+			wantMsg: "invalid public key",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			n := newEncTestNetwork(t, true)
+			n.registry.err = tt.regErr
+			step, _ := newEncryptStep(tt.enc, n.bapKM, n.registry, nil)
+			err := step.Run(encTestStepCtx(model.RoleBAP, encTestBAP, encTestBody))
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			var coded *model.CodedErr
+			if errors.As(err, &coded) {
+				t.Errorf("expected an unclassified (500) error, got %d %v", coded.HTTPStatus(), err)
+			}
+			if !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("err = %v, want it to mention %q", err, tt.wantMsg)
+			}
+		})
 	}
 }
 
@@ -614,7 +662,7 @@ func TestDecryptStep_Run_RestoresPlaintext(t *testing.T) {
 
 	step, _ := newDecryptStep(realDecrypter(t), n.bppKM)
 	ctx := encTestStepCtx(model.RoleBPP, encTestBPP, string(wire))
-	ctx.Request.Header.Set(model.AuthHeaderSubscriber, providerInitiatedAuthHeader(encTestBAP))
+	ctx.Request.Header.Set(model.AuthHeaderSubscriber, encTestAuthHeader(encTestBAP, "bap-key-1"))
 	if err := step.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -654,7 +702,7 @@ func TestDecryptStep_Run_Errors(t *testing.T) {
 		name       string
 		body       string
 		subID      string
-		auth       string
+		auth       string // "": the BAP's own header; "-": no header
 		km         func() definition.KeyManager
 		decrypter  definition.Decrypter
 		wantStatus int // 0: unclassified (500)
@@ -672,7 +720,9 @@ func TestDecryptStep_Run_Errors(t *testing.T) {
 		{name: "missing ciphertext", body: withEnvelope(func(e *encryptedEnvelope) { e.Ciphertext = "" }), wantStatus: http.StatusBadRequest, wantMsg: "ciphertext"},
 		{name: "subscriber id not set", body: wire, subID: "-", wantStatus: http.StatusBadRequest, wantMsg: "subscriberID not set"},
 		{name: "addressed to someone else", body: withEnvelope(func(e *encryptedEnvelope) { e.RecipientID = "other.example.com" }), wantStatus: http.StatusBadRequest, wantMsg: "encrypted for"},
-		{name: "signer is not the envelope sender", body: wire, auth: providerInitiatedAuthHeader("mallory.example.com"), wantStatus: http.StatusUnauthorized, wantMsg: "does not match signing subscriber"},
+		{name: "no Authorization header", body: wire, auth: "-", wantStatus: http.StatusUnauthorized, wantCode: "AUT_SIGNATURE_MISSING"},
+		{name: "signer is not the envelope sender", body: wire, auth: encTestAuthHeader("mallory.example.com", "bap-key-1"), wantStatus: http.StatusUnauthorized, wantMsg: "does not match signing subscriber"},
+		{name: "signer key is not the envelope sender key", body: wire, auth: encTestAuthHeader(encTestBAP, "other-key"), wantStatus: http.StatusUnauthorized, wantMsg: "does not match signing subscriber"},
 		{name: "unparseable Authorization header", body: wire, auth: "Signature nonsense", wantStatus: http.StatusUnauthorized},
 		{
 			name: "keyset lookup fails", body: wire,
@@ -725,7 +775,11 @@ func TestDecryptStep_Run_Errors(t *testing.T) {
 			}
 			step, _ := newDecryptStep(dec, km)
 			ctx := encTestStepCtx(model.RoleBPP, subID, tt.body)
-			if tt.auth != "" {
+			switch tt.auth {
+			case "-":
+			case "":
+				ctx.Request.Header.Set(model.AuthHeaderSubscriber, encTestAuthHeader(encTestBAP, "bap-key-1"))
+			default:
 				ctx.Request.Header.Set(model.AuthHeaderSubscriber, tt.auth)
 			}
 			err := step.Run(ctx)
@@ -763,9 +817,9 @@ func TestValidateEncryptionStepOrder(t *testing.T) {
 		{name: "no encryption steps", steps: []string{"sign", "validateSchema"}},
 		{name: "caller order", steps: []string{"validateSchema", "checkPolicy", "transformPayload", "addRoute", "encrypt", "sign", "storePayload"}},
 		{name: "receiver order", steps: []string{"validateSign", "decrypt", "mediateSchema", "validateSchema", "checkPolicy", "addRoute", "signAck"}},
-		{name: "encrypt without sign", steps: []string{"addRoute", "encrypt"}},
-		{name: "decrypt without validateSign", steps: []string{"decrypt", "addRoute"}},
-		{name: "encrypt after sign", steps: []string{"sign", "encrypt"}, wantErr: `"encrypt" must come before "sign"`},
+		{name: "encrypt without sign", steps: []string{"addRoute", "encrypt"}, wantErr: `"encrypt" must be followed by "sign"`},
+		{name: "decrypt without validateSign", steps: []string{"decrypt", "addRoute"}, wantErr: `"validateSign" must come before "decrypt"`},
+		{name: "encrypt after sign", steps: []string{"sign", "encrypt"}, wantErr: `"encrypt" must be followed by "sign"`},
 		{name: "schema validation after encrypt", steps: []string{"encrypt", "validateSchema", "sign"}, wantErr: `"validateSchema" must come before "encrypt"`},
 		{name: "decrypt before validateSign", steps: []string{"decrypt", "validateSign"}, wantErr: `"validateSign" must come before "decrypt"`},
 		{name: "policy check before decrypt", steps: []string{"validateSign", "checkPolicy", "decrypt"}, wantErr: `"checkPolicy" must come after "decrypt"`},
