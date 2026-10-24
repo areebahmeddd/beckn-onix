@@ -718,17 +718,24 @@ configure_network_services_bind_address() {
     fi
 }
 
-# Function to confirm reconfiguring an existing registry/gateway container.
-# The container is removed so it is recreated with the new configuration; its
-# data volumes are kept.
+# Function to confirm reconfiguring existing registry/gateway containers. They
+# are removed so they are recreated with the new configuration; their data
+# volumes are kept. Nothing is removed unless the user confirms.
+# Usage: confirm_service_reinstall name...
 confirm_service_reinstall() {
-    local name=$1
+    local name existing=""
     command -v docker >/dev/null 2>&1 || return 0
-    if docker ps -a --format '{{.Names}}' | grep -qx "$name"; then
-        echo "${YELLOW}A '$name' container already exists. It will be recreated with the new configuration (its data volumes are kept).${NC}"
-        onix_prompt_yes_no "Continue?" N || return 1
+    for name in "$@"; do
+        if docker ps -a --format '{{.Names}}' | grep -qx "$name"; then
+            existing="$existing $name"
+        fi
+    done
+    [[ -n "$existing" ]] || return 0
+    echo "${YELLOW}Existing container(s)$existing will be recreated with the new configuration (data volumes are kept).${NC}"
+    onix_prompt_yes_no "Continue?" N || return 1
+    for name in $existing; do
         docker rm -f "$name" >/dev/null
-    fi
+    done
     return 0
 }
 
@@ -764,16 +771,15 @@ print_production_network_next_steps() {
     local net_registry_url=$1 net_gateway_url=$2
     echo ""
     echo "${BLUE}Next steps for the production network${NC}"
-    echo "1. DNS and TLS: point the public names at this machine and terminate TLS in a reverse proxy"
+    echo "1. Change the default administrator password (user '$USERNAME') of the registry${net_gateway_url:+ and the gateway}"
+    echo "   BEFORE they are reachable from the internet: until then anyone who reaches them can administer"
+    echo "   the network. Log in from this machine (or an SSH tunnel) at http://127.0.0.1:3030/login${net_gateway_url:+ and http://127.0.0.1:4030/login}."
+    echo "2. DNS and TLS: point the public names at this machine and terminate TLS in a reverse proxy"
     echo "   (nginx, Caddy, a cloud load balancer) that forwards:"
     [[ -n "$net_registry_url" ]] && echo "     $net_registry_url -> http://127.0.0.1:3030"
     [[ -n "$net_gateway_url" ]] && echo "     $net_gateway_url -> http://127.0.0.1:4030"
     echo "   Ports 3000 and 4000 are not needed behind the proxy; keep them private."
-    if [[ -n "$net_registry_url" ]]; then
-        echo "2. Change the default registry administrator password (user '$USERNAME') at $net_registry_url/login"
-        echo "   before you invite participants${net_gateway_url:+; do the same for the gateway at $net_gateway_url/login}."
-        echo "3. Participants join with option 1, using $net_registry_url/subscribers as the registry URL."
-    fi
+    echo "3. Participants join with option 1, using $net_registry_url/subscribers as the registry URL."
 }
 
 # Function to create a new production network (Option 2): a self-hosted
@@ -855,9 +861,11 @@ create_production_network() {
         restart_script
         return
     fi
-    confirm_service_reinstall registry || { restart_script; return; }
+    # Ask about every existing container before removing any of them.
     if ((with_gateway)); then
-        confirm_service_reinstall gateway || { restart_script; return; }
+        confirm_service_reinstall registry gateway || { restart_script; return; }
+    else
+        confirm_service_reinstall registry || { restart_script; return; }
     fi
 
     install_package

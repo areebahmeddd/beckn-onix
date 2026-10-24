@@ -245,7 +245,7 @@ Production choices made by the installer:
 - Existing `registry` / `gateway` containers are only recreated after confirmation; their data volumes are kept.
 - TLS is left to a reverse proxy or load balancer; the installer prints the mapping (`https://registry.example.com` → `http://127.0.0.1:3030`, `https://gateway.example.com` → `http://127.0.0.1:4030`). Ports 3000 and 4000 are not needed behind the proxy.
 
-After installation, change the default `root` password of the registry (and gateway) before inviting participants, and approve participants in the registry. Participants join with option 1, using `https://registry.example.com/subscribers` as the registry URL.
+Right after installation — before the reverse proxy makes them reachable from the internet — change the default `root` password of the registry (and gateway), e.g. at `http://127.0.0.1:3030/login` on the host; then approve participants in the registry. Participants join with option 1, using `https://registry.example.com/subscribers` as the registry URL.
 
 ---
 
