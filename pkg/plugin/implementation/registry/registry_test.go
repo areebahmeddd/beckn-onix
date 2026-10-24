@@ -236,7 +236,6 @@ func TestRegistryClient_Lookup_Cache(t *testing.T) {
 		Subscriber: model.Subscriber{SubscriberID: "test-np"},
 		KeyID:      "key-1",
 	}
-	expectedCacheKey := "lookup_test-np_key-1"
 
 	t.Run("cache hit skips HTTP call", func(t *testing.T) {
 		cached := []model.Subscription{{SigningPublicKey: "cached-key"}}
@@ -302,8 +301,8 @@ func TestRegistryClient_Lookup_Cache(t *testing.T) {
 		if len(results) != 1 || results[0].SigningPublicKey != "registry-key" {
 			t.Errorf("unexpected result: %+v", results)
 		}
-		if cache.setKey != expectedCacheKey {
-			t.Errorf("expected cache key %q, got %q", expectedCacheKey, cache.setKey)
+		if want := lookupCacheKey(server.URL, "test-np", "key-1"); cache.setKey != want {
+			t.Errorf("expected cache key %q, got %q", want, cache.setKey)
 		}
 		if cache.setVal == "" {
 			t.Error("expected non-empty value written to cache")
@@ -422,4 +421,99 @@ func TestRegistryClient_Lookup_Cache(t *testing.T) {
 			t.Errorf("unexpected result: %+v", results)
 		}
 	})
+}
+
+// mapCache is an in-memory definition.Cache shared by several clients.
+type mapCache struct{ m map[string]string }
+
+func (c *mapCache) Get(ctx context.Context, key string) (string, error) {
+	if v, ok := c.m[key]; ok {
+		return v, nil
+	}
+	return "", errors.New("cache miss")
+}
+func (c *mapCache) Set(ctx context.Context, key, value string, ttl time.Duration) error {
+	c.m[key] = value
+	return nil
+}
+func (c *mapCache) Delete(ctx context.Context, key string) error { delete(c.m, key); return nil }
+func (c *mapCache) Clear(ctx context.Context) error              { c.m = map[string]string{}; return nil }
+
+// TestRegistryClient_Lookup_CacheIsPerRegistry checks that clients of different
+// registries sharing one cache (one adapter in several networks) do not serve
+// each other's cached records: a subscriber known only to registry A must not
+// be found through registry B.
+func TestRegistryClient_Lookup_CacheIsPerRegistry(t *testing.T) {
+	t.Parallel()
+
+	sub := &model.Subscription{
+		Subscriber: model.Subscriber{SubscriberID: "np.example.com"},
+		KeyID:      "key-1",
+	}
+	registryA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode([]model.Subscription{{
+			Subscriber:       model.Subscriber{SubscriberID: "np.example.com"},
+			KeyID:            "key-1",
+			SigningPublicKey: "key-from-a",
+		}}); err != nil {
+			t.Errorf("registry A: encode response: %v", err)
+		}
+	}))
+	defer registryA.Close()
+	registryBCalls := 0
+	registryB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		registryBCalls++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	}))
+	defer registryB.Close()
+
+	cache := &mapCache{m: map[string]string{}}
+	clientA, closeA, err := New(context.Background(), cache, &Config{URL: registryA.URL})
+	if err != nil {
+		t.Fatalf("failed to create client A: %v", err)
+	}
+	defer func() { _ = closeA() }()
+	clientB, closeB, err := New(context.Background(), cache, &Config{URL: registryB.URL})
+	if err != nil {
+		t.Fatalf("failed to create client B: %v", err)
+	}
+	defer func() { _ = closeB() }()
+
+	if got, err := clientA.Lookup(context.Background(), sub); err != nil || len(got) != 1 || got[0].SigningPublicKey != "key-from-a" {
+		t.Fatalf("registry A lookup = %+v, %v; want key-from-a", got, err)
+	}
+	got, err := clientB.Lookup(context.Background(), sub)
+	if err != nil {
+		t.Fatalf("registry B lookup: unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("registry B lookup returned registry A's cached record: %+v", got)
+	}
+	if registryBCalls != 1 {
+		t.Errorf("registry B was called %d times, want 1 (no cache hit from registry A)", registryBCalls)
+	}
+}
+
+func TestLookupCacheKey(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		a, b [3]string
+	}{
+		{"different registry", [3]string{"https://a.example.com/subscribers", "np", "k"}, [3]string{"https://b.example.com/subscribers", "np", "k"}},
+		{"separator in subscriber ID", [3]string{"https://r.example.com", "a_b", "c"}, [3]string{"https://r.example.com", "a", "b_c"}},
+		{"slash in IDs", [3]string{"https://r.example.com", "a/b", "c"}, [3]string{"https://r.example.com", "a", "b/c"}},
+		{"slash between URL and ID", [3]string{"https://r.example.com/x", "y", "k"}, [3]string{"https://r.example.com", "x/y", "k"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ka := lookupCacheKey(tt.a[0], tt.a[1], tt.a[2])
+			kb := lookupCacheKey(tt.b[0], tt.b[1], tt.b[2])
+			if ka == kb {
+				t.Errorf("lookupCacheKey(%q) == lookupCacheKey(%q) == %q", tt.a, tt.b, ka)
+			}
+		})
+	}
 }
