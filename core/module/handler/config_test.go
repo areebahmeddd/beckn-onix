@@ -7,6 +7,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/telemetry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v2"
 )
 
 func cfg(id string) *plugin.Config { return &plugin.Config{ID: id} }
@@ -123,4 +124,22 @@ func TestApplyTranslatorDefault_DoesNotOverrideExplicit(t *testing.T) {
 	}
 	p.applyTranslatorDefault()
 	assert.Equal(t, "customtranslator", p.Translator.ID)
+}
+
+func TestConfig_SubscribeYAML(t *testing.T) {
+	var c Config
+	require.NoError(t, yaml.Unmarshal([]byte(`
+role: bap
+subscriberId: bap.example.com
+subscribe:
+  url: https://bap.example.com/bap/receiver
+  type: BAP
+  required: true
+`), &c))
+	require.NotNil(t, c.Subscribe)
+	assert.Equal(t, SubscribeConfig{URL: "https://bap.example.com/bap/receiver", Type: "BAP", Required: true}, *c.Subscribe)
+
+	var unset Config
+	require.NoError(t, yaml.Unmarshal([]byte("role: bap\n"), &unset))
+	assert.Nil(t, unset.Subscribe, "subscribe is opt-in")
 }

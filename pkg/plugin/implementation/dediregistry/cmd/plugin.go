@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -86,7 +87,44 @@ func (d dediRegistryProvider) parseConfig(config map[string]string) (*dediregist
 		return nil, fmt.Errorf("retry_wait_min (%v) must not exceed retry_wait_max (%v)", dediConfig.RetryWaitMin, dediConfig.RetryWaitMax)
 	}
 
+	subscribeConfig, err := parseSubscribeConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	dediConfig.Subscribe = subscribeConfig
+
 	return dediConfig, nil
+}
+
+// subscribeConfigKeys are the plugin config keys that configure Subscribe.
+var subscribeConfigKeys = []string{
+	"subscribeURL", "subscribeNamespace", "subscribeRegistryName",
+	"subscribeRecordName", "subscribeCountries", "subscribeDescription",
+}
+
+// parseSubscribeConfig returns the Subscribe configuration, or nil when
+// subscribeURL is unset: subscribing is opt-in, and without it the plugin
+// stays lookup-only. The API key is read from the DEDI_API_KEY environment
+// variable rather than the config map, so it never sits in a YAML file.
+// dediregistry.New validates the result.
+func parseSubscribeConfig(config map[string]string) (*dediregistry.SubscribeConfig, error) {
+	if config["subscribeURL"] == "" {
+		for _, key := range subscribeConfigKeys {
+			if config[key] != "" {
+				return nil, fmt.Errorf("%s is set but subscribeURL is empty; set subscribeURL to enable DeDi subscribe", key)
+			}
+		}
+		return nil, nil
+	}
+	return &dediregistry.SubscribeConfig{
+		URL:          config["subscribeURL"],
+		Namespace:    strings.TrimSpace(config["subscribeNamespace"]),
+		RegistryName: strings.TrimSpace(config["subscribeRegistryName"]),
+		RecordName:   strings.TrimSpace(config["subscribeRecordName"]),
+		Countries:    splitCommaList(config["subscribeCountries"]),
+		Description:  config["subscribeDescription"],
+		APIKey:       os.Getenv(dediregistry.APIKeyEnv),
+	}, nil
 }
 
 // New creates a new DeDi registry plugin instance.
@@ -120,16 +158,22 @@ func (d dediRegistryProvider) New(ctx context.Context, cache definition.Cache, c
 }
 
 func parseAllowedNetworkIDs(raw string) []string {
+	return splitCommaList(raw)
+}
+
+// splitCommaList splits a comma-separated config value, trimming spaces and
+// dropping empty items.
+func splitCommaList(raw string) []string {
 	parts := strings.Split(raw, ",")
-	networkIDs := make([]string, 0, len(parts))
+	items := make([]string, 0, len(parts))
 	for _, part := range parts {
 		item := strings.TrimSpace(part)
 		if item == "" {
 			continue
 		}
-		networkIDs = append(networkIDs, item)
+		items = append(items, item)
 	}
-	return networkIDs
+	return items
 }
 
 func resolveAllowedNetworkIDs(config map[string]string) ([]string, error) {

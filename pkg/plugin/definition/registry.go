@@ -43,6 +43,20 @@ type RegistryMetadataLookup interface {
 	QueryByNetwork(ctx context.Context, networkID string) ([]model.SubscriberRecord, error)
 }
 
+// RegistrySubscriber publishes this adapter's own subscriber record to a registry: it creates
+// the record when none exists, updates it when its details differ, and writes nothing when they
+// already match, so calling it on every startup is safe.
+// Like RegistryMetadataLookup it is an optional capability: callers discover it by type
+// assertion on the RegistryLookup a registry provider returns, so RegistryLookup
+// implementations that cannot subscribe are unaffected.
+type RegistrySubscriber interface {
+	// Subscribe publishes req's subscriber identity: req.SubscriberID, req.URL (the callback
+	// URL other participants send to), req.Type (e.g. "BAP", "BPP"), req.SigningPublicKey and,
+	// when set, req.EncrPublicKey and req.Domain. Where the record lives in the registry is
+	// the implementation's own configuration.
+	Subscribe(ctx context.Context, req *model.Subscription) (*model.SubscribeResult, error)
+}
+
 // RegistryLookupProvider initializes a new registry lookup instance.
 type RegistryLookupProvider interface {
 	New(context.Context, Cache, map[string]string) (RegistryLookup, func() error, error)

@@ -197,4 +197,25 @@ type Config struct {
 	// Authorization header, so any caller can query any subscriber's crawl
 	// status. Must stay false/unset for any network-facing deployment.
 	AuthDisabled bool `yaml:"authDisabled,omitempty"`
+	// Subscribe, when set, publishes this module's subscriber record to the
+	// registry plugin at startup (see subscribeToRegistry). Unset by default,
+	// so existing configs never write to a registry.
+	Subscribe *SubscribeConfig `yaml:"subscribe,omitempty"`
+}
+
+// SubscribeConfig opts a std handler into publishing its subscriber record to
+// its registry plugin at startup. The subscriber ID comes from
+// Config.SubscriberID and the public keys from the key manager's keyset for
+// it; where the record is written is the registry plugin's own configuration.
+type SubscribeConfig struct {
+	// URL is the callback URL published for the subscriber: the receiver
+	// endpoint other participants send requests to.
+	URL string `yaml:"url"`
+	// Type is the published participant type (e.g. "BAP", "BPP", "CDS").
+	// Defaults to the upper-cased role for the bap and bpp roles.
+	Type string `yaml:"type,omitempty"`
+	// Required fails startup when subscribing fails. By default the failure
+	// is logged and the adapter starts anyway, so a registry outage cannot
+	// keep it down.
+	Required bool `yaml:"required,omitempty"`
 }

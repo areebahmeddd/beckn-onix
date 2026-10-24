@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -395,4 +396,85 @@ func TestDediRegistryProvider_New_NilContext(t *testing.T) {
 	if err.Error() != "context cannot be nil" {
 		t.Errorf("Expected specific error message, got %v", err)
 	}
+}
+
+func TestParseSubscribeConfig(t *testing.T) {
+	t.Run("unset leaves the plugin lookup-only", func(t *testing.T) {
+		cfg, err := dediRegistryProvider{}.parseConfig(map[string]string{"url": "https://test.com/dedi"})
+		if err != nil {
+			t.Fatalf("parseConfig() error = %v", err)
+		}
+		if cfg.Subscribe != nil {
+			t.Fatalf("expected no subscribe config, got %+v", cfg.Subscribe)
+		}
+	})
+
+	t.Run("subscribe keys without subscribeURL are rejected", func(t *testing.T) {
+		_, err := dediRegistryProvider{}.parseConfig(map[string]string{
+			"url":                "https://test.com/dedi",
+			"subscribeNamespace": "np.example.com",
+		})
+		if err == nil || !strings.Contains(err.Error(), "subscribeNamespace is set but subscribeURL is empty") {
+			t.Fatalf("parseConfig() error = %v", err)
+		}
+	})
+
+	t.Run("full config", func(t *testing.T) {
+		t.Setenv(dediregistry.APIKeyEnv, "secret-key")
+		cfg, err := dediRegistryProvider{}.parseConfig(map[string]string{
+			"url":                   "https://test.com/dedi",
+			"subscribeURL":          "https://api.dedi.global/dedi",
+			"subscribeNamespace":    " np.example.com ",
+			"subscribeRegistryName": "nfo-x_mobility_prod_registry",
+			"subscribeRecordName":   "bap-record",
+			"subscribeCountries":    "IND, USA,",
+			"subscribeDescription":  "NP BAP",
+		})
+		if err != nil {
+			t.Fatalf("parseConfig() error = %v", err)
+		}
+		want := &dediregistry.SubscribeConfig{
+			URL:          "https://api.dedi.global/dedi",
+			Namespace:    "np.example.com",
+			RegistryName: "nfo-x_mobility_prod_registry",
+			RecordName:   "bap-record",
+			Countries:    []string{"IND", "USA"},
+			Description:  "NP BAP",
+			APIKey:       "secret-key",
+		}
+		if !reflect.DeepEqual(cfg.Subscribe, want) {
+			t.Fatalf("Subscribe = %+v, want %+v", cfg.Subscribe, want)
+		}
+	})
+}
+
+func TestDediRegistryProvider_New_Subscribe(t *testing.T) {
+	config := map[string]string{
+		"url":                   "https://test.com/dedi",
+		"subscribeURL":          "https://api.dedi.global/dedi",
+		"subscribeNamespace":    "np.example.com",
+		"subscribeRegistryName": "registry",
+		"subscribeRecordName":   "bap-record",
+		"subscribeCountries":    "IND",
+	}
+
+	t.Run("missing API key fails the load", func(t *testing.T) {
+		t.Setenv(dediregistry.APIKeyEnv, "")
+		_, _, err := Provider.New(context.Background(), nil, config)
+		if err == nil || !strings.Contains(err.Error(), dediregistry.APIKeyEnv) {
+			t.Fatalf("New() error = %v, want the missing API key", err)
+		}
+	})
+
+	t.Run("returns a RegistrySubscriber", func(t *testing.T) {
+		t.Setenv(dediregistry.APIKeyEnv, "secret-key")
+		registry, closer, err := Provider.New(context.Background(), nil, config)
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		t.Cleanup(func() { _ = closer() })
+		if _, ok := registry.(definition.RegistrySubscriber); !ok {
+			t.Fatalf("%T does not implement definition.RegistrySubscriber", registry)
+		}
+	})
 }

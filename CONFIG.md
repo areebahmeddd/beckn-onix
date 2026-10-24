@@ -697,6 +697,55 @@ modules:
 **Default**: `false`  
 **Description**: For sub-endpoints that require signed-request verification, skips it and takes the caller's identity from a plain, unauthenticated request parameter instead. Currently the only such sub-endpoint is `catalogCrawl`'s `/status`, whose signed-verification path isn't implemented yet — it checks `authDisabled: true` per request (an unset/`false` value rejects every `/status` request, but never affects `/trigger`, which needs no auth of its own). **Never set `true` for a sub-endpoint whose auth is actually implemented, or in any real deployment.**
 
+##### `subscribe`
+**Type**: `object`  
+**Required**: No (off by default)  
+**Handler types**: `std` only  
+**Description**: At startup, publishes this module's subscriber record to its `registry` plugin (create, update, or nothing when it is already up to date), so restarts are safe. The published identity is assembled from:
+- the subscriber ID: this handler's `subscriberId`;
+- the signing and encryption **public** keys: this module's `keyManager` keyset for that ID;
+- the callback URL and type: from this block.
+
+Where the record is written is configured on the registry plugin. Today only [`dediregistry`](#2-dediregistry-plugin) supports it; see its `subscribe*` keys. Put the block on the module whose path is your **receiver** endpoint.
+
+| Field | Required | Description |
+|---|---|---|
+| `url` | Yes | Callback URL to publish: your receiver endpoint, absolute `http(s)` |
+| `type` | For roles other than `bap`/`bpp` | Participant type to publish (`BAP`, `BPP`, `CS`, `DS`, `CDS`). Defaults to the upper-cased `role` |
+| `required` | No (default `false`) | `true` fails startup when subscribing fails. With `false`, the failure is logged at Error and the adapter starts anyway |
+
+A configuration that cannot work fails startup whatever `required` says. That covers:
+- no `registry`, or one that cannot subscribe;
+- no `keyManager`;
+- no `subscriberId`;
+- a bad `url`;
+- a missing `type` for a role other than `bap`/`bpp`.
+
+Startup waits for the registry call, bounded by the registry plugin's `timeout`/`retry_*` settings. On success, the adapter logs the outcome (`created` / `updated` / `unchanged`) and the registry's record ID. It warns when that record ID differs from the key manager's key ID, because DeDi serves your signing key under the record ID. It also warns when the record is not `live`.
+
+```yaml
+handler:
+  type: std
+  role: bap
+  subscriberId: bap.example.com
+  subscribe:
+    url: https://bap.example.com/bap/receiver
+    required: false
+  plugins:
+    registry:
+      id: dediregistry
+      config:
+        url: "https://fabric.nfh.global/registry/dedi"
+        subscribeURL: "https://api.dedi.global/dedi"   # API key from env DEDI_API_KEY
+        subscribeNamespace: bap.example.com
+        subscribeRegistryName: nfo-x_mobility_prod_registry
+        subscribeRecordName: bap-record
+        subscribeCountries: IND
+    keyManager:
+      id: simplekeymanager
+      config: { ... }
+```
+
 ##### `httpClientConfig`
 **Type**: `object`  
 **Required**: Yes  
@@ -825,6 +874,16 @@ registry:
 - `retry_max`: Maximum number of retry attempts (Optional, default: 4)
 - `retry_wait_min`: Minimum wait time between retries in duration format (Optional, default: 1s)
 - `retry_wait_max`: Maximum wait time between retries in duration format (Optional, default: 30s)
+
+**Subscribe parameters** (optional; they only take effect together with a handler [`subscribe`](#subscribe) block):
+- `subscribeURL`: DeDi API base URL, including `/dedi`, that owns your record, e.g. `https://api.dedi.global/dedi`. This is not the read-only `url` cache. Setting it enables subscribe and requires the keys below plus the **`DEDI_API_KEY` environment variable** (a DeDi API key generated in the [publish portal](https://publish.dedi.global)). Any other `subscribe*` key without `subscribeURL` is a startup error.
+- `subscribeNamespace`: Your verified DeDi namespace (domain).
+- `subscribeRegistryName`: The registry in that namespace that uses the Beckn Subscriber schema.
+- `subscribeRecordName`: Record name, unique within the registry (one record per role).
+- `subscribeCountries`: Comma-separated ISO 3166-1 alpha-3 codes (at least one; required by the schema).
+- `subscribeDescription`: Record description (Optional). An existing record keeps its own; a new record gets a generated one.
+
+The DeDi create/update endpoints the plugin calls are not in DeDi's published OpenAPI; they are the calls its publish portal makes. See the [plugin README](pkg/plugin/implementation/dediregistry/README.md#subscribing-publishing-this-adapters-record) for the request flow, where each endpoint comes from, and the open questions.
 
 ---
 

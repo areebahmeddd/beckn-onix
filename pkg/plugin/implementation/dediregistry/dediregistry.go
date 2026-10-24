@@ -185,11 +185,16 @@ func isTimeout(err error) bool {
 // only after retries are exhausted — 501 is never retried — or an unexpected
 // 1xx/2xx/3xx) means DeDi is not serving the lookup.
 func classifyStatus(operation string, resp *http.Response, onNotFound notFoundFunc) *model.CodedErr {
-	err := fmt.Errorf("DeDi %s request failed with status: %s", operation, resp.Status)
+	return classifyStatusCode(resp.StatusCode, fmt.Errorf("DeDi %s request failed with status: %s", operation, resp.Status), onNotFound)
+}
+
+// classifyStatusCode is classifyStatus for a status code and an already-built
+// error describing it.
+func classifyStatusCode(statusCode int, err error, onNotFound notFoundFunc) *model.CodedErr {
 	switch {
-	case resp.StatusCode == http.StatusNotFound:
+	case statusCode == http.StatusNotFound:
 		return onNotFound(err)
-	case resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests:
+	case statusCode >= 400 && statusCode < 500 && statusCode != http.StatusTooManyRequests:
 		return internalErr(err)
 	default:
 		return downstreamUnavailable(err)
@@ -205,6 +210,9 @@ type Config struct {
 	RetryMax          int           `yaml:"retry_max" json:"retry_max"`
 	RetryWaitMin      time.Duration `yaml:"retry_wait_min" json:"retry_wait_min"`
 	RetryWaitMax      time.Duration `yaml:"retry_wait_max" json:"retry_wait_max"`
+	// Subscribe enables Subscribe (definition.RegistrySubscriber). Nil — the
+	// default — leaves the plugin lookup-only.
+	Subscribe *SubscribeConfig `yaml:"subscribe" json:"subscribe"`
 }
 
 // DeDiRegistryClient encapsulates the logic for calling the DeDi registry endpoints.
@@ -215,25 +223,37 @@ type DeDiRegistryClient struct {
 	cacheTTL time.Duration
 }
 
+// validateBaseURL checks that raw, the value of config key key, can have
+// request paths appended to it.
+func validateBaseURL(key, raw string) error {
+	if raw == "" {
+		return fmt.Errorf("%s cannot be empty", key)
+	}
+	// Caught here rather than per request: these all build a request fine but
+	// send every call to the wrong place (paths are appended as "%s/lookup/...").
+	// A trailing slash is harmless and is trimmed in New.
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("%s must be an absolute http(s) URL, got %q", key, raw)
+	}
+	// Checked on the raw string: url.Parse leaves RawQuery and Fragment empty
+	// for a bare trailing "?" or "#".
+	if strings.ContainsAny(raw, "?#") {
+		return fmt.Errorf("%s must not have a query or fragment, got %q", key, raw)
+	}
+	return nil
+}
+
 // validate checks if the provided DeDi registry configuration is valid.
 func validate(cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("DeDi registry config cannot be nil")
 	}
-	if cfg.URL == "" {
-		return fmt.Errorf("url cannot be empty")
+	if err := validateBaseURL("url", cfg.URL); err != nil {
+		return err
 	}
-	// Caught here rather than per request: these all build a request fine but
-	// send every call to the wrong place (paths are appended as "%s/lookup/...").
-	// A trailing slash is harmless and is trimmed in New.
-	u, err := url.Parse(cfg.URL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("url must be an absolute http(s) URL, got %q", cfg.URL)
-	}
-	// Checked on the raw string: url.Parse leaves RawQuery and Fragment empty
-	// for a bare trailing "?" or "#".
-	if strings.ContainsAny(cfg.URL, "?#") {
-		return fmt.Errorf("url must not have a query or fragment, got %q", cfg.URL)
+	if cfg.Subscribe != nil {
+		return validateSubscribe(cfg.Subscribe)
 	}
 	return nil
 }
@@ -277,6 +297,12 @@ func New(ctx context.Context, cache definition.Cache, cfg *Config) (*DeDiRegistr
 	// leaves the caller's Config unchanged.
 	clientCfg := *cfg
 	clientCfg.URL = strings.TrimRight(cfg.URL, "/")
+	if cfg.Subscribe != nil {
+		subCfg := *cfg.Subscribe
+		subCfg.URL = strings.TrimRight(subCfg.URL, "/")
+		subCfg.Countries = append([]string(nil), cfg.Subscribe.Countries...)
+		clientCfg.Subscribe = &subCfg
+	}
 
 	client := &DeDiRegistryClient{
 		config:   &clientCfg,

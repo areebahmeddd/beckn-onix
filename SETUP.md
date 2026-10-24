@@ -520,6 +520,20 @@ vault write -f auth/approle/role/beckn-role/secret-id
 
 See [CONFIG.md](CONFIG.md) for the full plugin configuration reference for both key managers.
 
+**Publishing your subscriber record to Beckn One (DeDi) from ONIX (optional):**
+
+Joining the network on the [hosted path](https://docs.nfh.global/build/onboarding/hosted.md) needs a few steps on [publish.dedi.global](https://publish.dedi.global) first:
+1. Create an account.
+2. Verify your namespace.
+3. Create a registry that uses the Beckn Subscriber schema.
+
+After that, ONIX can create and keep the subscriber record itself instead of you filling it in by hand:
+1. Generate an API key in the portal and pass it to the adapter as `DEDI_API_KEY`.
+2. Add the `subscribe*` keys to the receiver module's `dediregistry` config.
+3. Add a `subscribe` block to that module's handler (see [CONFIG.md](CONFIG.md#subscribe)).
+
+On each start, ONIX creates the record from its `subscriberId`, callback URL and the key manager's public keys. If the record already exists, ONIX updates it, or leaves it alone when it is already up to date. ONIX logs the record ID, which is the key ID your `keyId` must match; it warns if they differ. A failure is only logged unless `subscribe.required: true`. Joining a network still needs the NFO to add your record to its network registry.
+
 ### 4.5 Async Message Publishing with RabbitMQ
 
 By default ONIX processes each request synchronously — it calls the upstream participant, waits for a response, and returns. For high-volume deployments, or when your application consumes Beckn callbacks from a queue rather than via a direct webhook, use the `publisher` plugin to route messages through RabbitMQ instead.
