@@ -158,6 +158,12 @@ func (m *catalogPublishTestManager) Middleware(context.Context, *plugin.Config) 
 func (m *catalogPublishTestManager) SignValidator(context.Context, *plugin.Config) (definition.SignValidator, error) {
 	panic("unused")
 }
+func (m *catalogPublishTestManager) Encryptor(context.Context, *plugin.Config) (definition.Encrypter, error) {
+	panic("unused")
+}
+func (m *catalogPublishTestManager) Decryptor(context.Context, *plugin.Config) (definition.Decrypter, error) {
+	panic("unused")
+}
 func (m *catalogPublishTestManager) Validator(context.Context, *plugin.Config) (definition.SchemaValidator, error) {
 	panic("unused")
 }

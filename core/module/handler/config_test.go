@@ -7,6 +7,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/telemetry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v2"
 )
 
 func cfg(id string) *plugin.Config { return &plugin.Config{ID: id} }
@@ -41,9 +42,11 @@ func TestPluginEntries_AllNamedSlots(t *testing.T) {
 		PayloadTransformer:    cfg("reqmapper"),
 		Translator:            cfg("jsonatatranslator"),
 		SchemaVersionMediator: cfg("schemaversionmediator"),
+		Encrypter:             cfg("encrypter"),
+		Decrypter:             cfg("decrypter"),
 	}
 	entries := p.PluginEntries()
-	assert.Len(t, entries, 13)
+	assert.Len(t, entries, 15)
 
 	byType := make(map[string]string)
 	for _, e := range entries {
@@ -62,6 +65,8 @@ func TestPluginEntries_AllNamedSlots(t *testing.T) {
 	assert.Equal(t, "reqmapper", byType["payload_transformer"])
 	assert.Equal(t, "jsonatatranslator", byType["translator"])
 	assert.Equal(t, "schemaversionmediator", byType["schema_version_mediator"])
+	assert.Equal(t, "encrypter", byType["encrypter"])
+	assert.Equal(t, "decrypter", byType["decrypter"])
 }
 
 func TestPluginEntries_StepsAndMiddleware(t *testing.T) {
@@ -123,4 +128,25 @@ func TestApplyTranslatorDefault_DoesNotOverrideExplicit(t *testing.T) {
 	}
 	p.applyTranslatorDefault()
 	assert.Equal(t, "customtranslator", p.Translator.ID)
+}
+
+func TestConfig_UnmarshalEncryptionPlugins(t *testing.T) {
+	raw := `
+role: bpp
+plugins:
+  encrypter:
+    id: encrypter
+  decrypter:
+    id: decrypter
+steps:
+  - validateSign
+  - decrypt
+`
+	var c Config
+	require.NoError(t, yaml.Unmarshal([]byte(raw), &c))
+	require.NotNil(t, c.Plugins.Encrypter)
+	require.NotNil(t, c.Plugins.Decrypter)
+	assert.Equal(t, "encrypter", c.Plugins.Encrypter.ID)
+	assert.Equal(t, "decrypter", c.Plugins.Decrypter.ID)
+	assert.Equal(t, []string{"validateSign", "decrypt"}, c.Steps)
 }

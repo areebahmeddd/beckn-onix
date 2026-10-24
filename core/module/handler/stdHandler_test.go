@@ -179,6 +179,14 @@ func (noopPluginManager) CatalogBlobStore(_ context.Context, _ *plugin.Config) (
 	return nil, nil
 }
 
+func (noopPluginManager) Encryptor(_ context.Context, _ *plugin.Config) (definition.Encrypter, error) {
+	return nil, nil
+}
+
+func (noopPluginManager) Decryptor(_ context.Context, _ *plugin.Config) (definition.Decrypter, error) {
+	return nil, nil
+}
+
 type registryWithoutMetadata struct{}
 
 func (registryWithoutMetadata) Lookup(context.Context, *model.Subscription) ([]model.Subscription, error) {

@@ -54,6 +54,10 @@ type stdHandler struct {
 	transportWrapper   definition.TransportWrapper
 	payloadTransformer definition.Step
 	payloadStore       definition.PayloadStore
+	// encrypter / decrypter are non-nil only when configured; they back the
+	// optional "encrypt" / "decrypt" steps (see encryptionstep.go).
+	encrypter definition.Encrypter
+	decrypter definition.Decrypter
 	// ackSigner is non-nil only when the "signAck" step is configured (Receiver
 	// modules). It is also used to sign pipeline-NACK responses so that ALL
 	// synchronous responses carry a Signature header per NFH-007 CON-004-02.
@@ -603,6 +607,12 @@ func (h *stdHandler) initPlugins(ctx context.Context, mgr PluginManager, cfg *Pl
 	if h.payloadTransformer, err = loadPayloadTransformerStep(ctx, mgr, translator, cfg.PayloadTransformer); err != nil {
 		return err
 	}
+	if h.encrypter, err = LoadPlugin(ctx, "Encrypter", cfg.Encrypter, mgr.Encryptor); err != nil {
+		return err
+	}
+	if h.decrypter, err = LoadPlugin(ctx, "Decrypter", cfg.Decrypter, mgr.Decryptor); err != nil {
+		return err
+	}
 
 	log.Debugf(ctx, "All required plugins successfully loaded for stdHandler")
 	return nil
@@ -610,6 +620,9 @@ func (h *stdHandler) initPlugins(ctx context.Context, mgr PluginManager, cfg *Pl
 
 // initSteps initializes and validates processing steps for the processor.
 func (h *stdHandler) initSteps(ctx context.Context, mgr PluginManager, cfg *Config) error {
+	if err := validateEncryptionStepOrder(cfg.Steps); err != nil {
+		return err
+	}
 	steps := make(map[string]definition.Step)
 
 	// Load plugin-based steps
@@ -681,6 +694,10 @@ func (h *stdHandler) initSteps(ctx context.Context, mgr PluginManager, cfg *Conf
 			s = h.payloadTransformer
 		case "storePayload":
 			s, err = newStorePayloadStep(h.payloadStore)
+		case "encrypt":
+			s, err = newEncryptStep(h.encrypter, h.km, h.registry, h.payloadStore)
+		case "decrypt":
+			s, err = newDecryptStep(h.decrypter, h.km)
 		default:
 			if customStep, exists := steps[step]; exists {
 				s = customStep

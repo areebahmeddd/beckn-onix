@@ -120,6 +120,16 @@ func (m *MockPluginManager) CatalogBlobStore(_ context.Context, _ *plugin.Config
 	return nil, nil
 }
 
+// Encryptor returns a mock implementation of the Encrypter interface.
+func (m *MockPluginManager) Encryptor(_ context.Context, _ *plugin.Config) (definition.Encrypter, error) {
+	return nil, nil
+}
+
+// Decryptor returns a mock implementation of the Decrypter interface.
+func (m *MockPluginManager) Decryptor(_ context.Context, _ *plugin.Config) (definition.Decrypter, error) {
+	return nil, nil
+}
+
 // PolicyChecker returns a mock implementation of the PolicyChecker interface.
 func (m *MockPluginManager) PolicyChecker(ctx context.Context, manifestLoader definition.ManifestLoader, cfg *plugin.Config) (definition.PolicyChecker, error) {
 	if m.policyCheckerFunc != nil {

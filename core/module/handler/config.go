@@ -33,6 +33,8 @@ type PluginManager interface {
 	PayloadStore(ctx context.Context, cache definition.Cache, namespace string, cfg *plugin.Config) (definition.PayloadStore, error)
 	CatalogPublisher(ctx context.Context, km definition.KeyManager, blobStore definition.CatalogBlobStore, registry definition.RegistryLookup, cfg *plugin.Config) (definition.CatalogPublisher, error)
 	CatalogBlobStore(ctx context.Context, cfg *plugin.Config) (definition.CatalogBlobStore, error)
+	Encryptor(ctx context.Context, cfg *plugin.Config) (definition.Encrypter, error)
+	Decryptor(ctx context.Context, cfg *plugin.Config) (definition.Decrypter, error)
 }
 
 // Type defines different handler types for processing requests.
@@ -90,6 +92,8 @@ type PluginCfg struct {
 	PayloadStore          *plugin.Config  `yaml:"payloadStore,omitempty"`
 	CatalogPublisher      *plugin.Config  `yaml:"catalogPublisher,omitempty"`
 	CatalogBlobStore      *plugin.Config  `yaml:"catalogBlobStore,omitempty"`
+	Encrypter             *plugin.Config  `yaml:"encrypter,omitempty"`
+	Decrypter             *plugin.Config  `yaml:"decrypter,omitempty"`
 	Middleware            []plugin.Config `yaml:"middleware,omitempty"`
 	Steps                 []plugin.Config
 }
@@ -121,6 +125,8 @@ func (p *PluginCfg) PluginEntries() []telemetry.PluginEntry {
 	add("payload_store", p.PayloadStore)
 	add("catalog_publisher", p.CatalogPublisher)
 	add("catalog_blob_store", p.CatalogBlobStore)
+	add("encrypter", p.Encrypter)
+	add("decrypter", p.Decrypter)
 	for i := range p.Steps {
 		if p.Steps[i].ID != "" {
 			entries = append(entries, telemetry.PluginEntry{Type: "step", ID: p.Steps[i].ID})

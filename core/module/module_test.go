@@ -97,6 +97,14 @@ func (m *mockPluginManager) CatalogBlobStore(_ context.Context, _ *plugin.Config
 	return nil, nil
 }
 
+func (m *mockPluginManager) Encryptor(_ context.Context, _ *plugin.Config) (definition.Encrypter, error) {
+	return nil, nil
+}
+
+func (m *mockPluginManager) Decryptor(_ context.Context, _ *plugin.Config) (definition.Decrypter, error) {
+	return nil, nil
+}
+
 func (m *mockPluginManager) SchemaVersionMediator(_ context.Context, _ definition.ManifestLoader, _ definition.Translator, _ *plugin.Config) (definition.SchemaVersionMediator, error) {
 	return nil, nil
 }
