@@ -366,6 +366,29 @@ onix_collect_protocol() {
     onix_net_search_url[i]=$search_url
 }
 
+# onix_collect_network_name VAR INDEX - a short, unique network name; it
+# prefixes the module paths (/<name>/bap/receiver/) and names the modules.
+onix_collect_network_name() {
+    local __var=$1 __i=$2 __name __j __taken
+    while true; do
+        onix_prompt __name "Short name for network $((__i + 1)) (lowercase letters, digits and -, e.g. retail-net)"
+        if ! [[ "$__name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]; then
+            echo "${RED}Invalid name. Use up to 32 lowercase letters, digits and -, starting with a letter or digit.${NC}"
+            continue
+        fi
+        __taken=0
+        for ((__j = 0; __j < __i; __j++)); do
+            [[ "${onix_net_name[__j]}" == "$__name" ]] && __taken=1
+        done
+        if ((__taken)); then
+            echo "${RED}Network '$__name' is already configured; choose another name.${NC}"
+            continue
+        fi
+        break
+    done
+    printf -v "$__var" '%s' "$__name"
+}
+
 # onix_collect_network INDEX NAME PREFIX: registry and protocol of network
 # INDEX. PREFIX ("" or "/<name>") is prepended to its module paths.
 onix_collect_network() {

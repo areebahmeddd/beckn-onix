@@ -132,59 +132,6 @@ install_bap_protocol_server() {
     echo "Protocol server BAP registry entries created successfully"
 }
 
-mergingNetworks() {
-    echo -e "1. Merge Two Different Registries \n2. Merge Multiple Registries into a Super Registry"
-    read -p "Enter your choice: " merging_network
-    urls=()
-    if [ "$merging_network" = "2" ]; then
-        while true; do
-            read -p "Enter registry URL (or 'N' to stop): " url
-            if [[ $url == 'N' ]]; then
-                break
-            else
-                urls+=("$url")
-            fi
-        done
-        read -p "Enter the Super Registry URL: " registry_super_url
-    else
-        read -p "Enter A registry URL: " registry_a_url
-        read -p "Enter B registry URL: " registry_b_url
-        urls+=("$registry_a_url")
-
-    fi
-    if [[ ${#urls[@]} -gt 0 ]]; then
-        echo "Entered registry URLs:"
-        all_responses=""
-        for url in "${urls[@]}"; do
-            response=$(curl -s -H 'ACCEPT: application/json' -H 'CONTENT-TYPE: application/json' "$url"+/subscribers/lookup -d '{}')
-            all_responses+="$response"
-        done
-        for element in $(echo "$all_responses" | jq -c '.[]'); do
-            if [ "$merging_network" -eq 1 ]; then
-                curl --location "$registry_b_url"+/subscribers/register \
-                    --header 'Content-Type: application/json' \
-                    --data "$element"
-                echo
-            else
-                curl --location "$registry_super_url"+/subscribers/register \
-                    --header 'Content-Type: application/json' \
-                    --data "$element"
-                echo
-            fi
-        done
-        echo "Merging Multiple Registries into a Super Registry Done ..."
-    else
-        echo "No registry URLs entered."
-    fi
-
-    if [ "$merging_network" = "2" ]; then
-        echo "Merging Multiple Registries into a Super Registry"
-    else
-        echo "Invalid option. Please restart the script and select a valid option."
-        exit 1
-    fi
-}
-
 # Function to install BPP Protocol Server with Sandbox
 install_bpp_protocol_server_with_sandbox() {
     echo "${GREEN}................Installing Sandbox................${NC}"
@@ -867,6 +814,42 @@ create_production_network() {
     print_production_network_next_steps "$net_registry_url" "$net_gateway_url"
 }
 
+# Function to set up one ONIX adapter that participates in several networks
+# (Option 5). Each network gets its own modules under /<name>/ with its own
+# registry, subscriber IDs, keys and routing rules.
+merge_networks() {
+    local i=0 name
+    echo "${GREEN}................Setting up one ONIX adapter for multiple networks................${NC}"
+    echo "Each network gets its own modules under /<network name>/bap|bpp/receiver|caller/, with its"
+    echo "own registry, subscriber IDs, keys and routing rules; one adapter and one port serve them all."
+    echo "${BLUE}For several Beckn One networks that share a subscriber ID, option 1 with comma-separated${NC}"
+    echo "${BLUE}network IDs is simpler: the DeDi registry plugin accepts all of them in one set of modules.${NC}"
+    onix_reset_state
+    onix_collect_role
+    if ! onix_confirm_config_replacement; then
+        restart_script
+        return
+    fi
+    onix_collect_public_base_url
+
+    while true; do
+        echo -e "\n${GREEN}Network $((i + 1))${NC}"
+        onix_collect_network_name name "$i"
+        onix_collect_network "$i" "$name" "/$name"
+        if onix_has_bap; then onix_collect_participant "$i" BAP; fi
+        if onix_has_bpp; then onix_collect_participant "$i" BPP; fi
+        i=$((i + 1))
+        if ((i < 2)); then
+            continue
+        fi
+        onix_prompt_yes_no "Add another network?" N || break
+    done
+
+    onix_collect_app_urls
+    onix_collect_runtime
+    setup_onix_node
+}
+
 # Function to join an existing network with an ONIX adapter (Option 1)
 join_existing_network() {
     echo "${GREEN}................Joining an existing network with an ONIX adapter................${NC}"
@@ -936,8 +919,7 @@ elif [[ $choice -eq 4 ]]; then
     install_bpp_protocol_server_with_sandbox
     install_adapter "BOTH"
 elif [[ $choice -eq 5 ]]; then
-    echo "Determining the platforms available based on the initial choice"
-    mergingNetworks
+    merge_networks
 elif [[ $choice -eq 6 ]]; then
     echo "${BoldGreen}Currently this feature is not available in this distribution of Beckn ONIX${NC}"
     restart_script
