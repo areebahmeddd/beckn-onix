@@ -83,7 +83,7 @@ Besides its structured logs (unchanged), the crawler emits OpenTelemetry spans a
 | `catalogcrawler.sync_tick` | new root per tick | `items_claimed` |
 | `catalogcrawler.queue_claim` | `sync_tick` | `claimed`, `status`, `error_type` |
 | `catalogcrawler.park_sweep` | new root per tick | `status`, `error_type` |
-| `catalogcrawler.on_demand_crawl` | new root, **linked** to the triggering `/crawl/trigger` request's span | `run_id`, `network_ids`, `status`, `error_type` |
+| `catalogcrawler.on_demand_crawl` | new root; **linked** to the caller's span when `CrawlRegistry`'s ctx carries one (the `/crawl/trigger` endpoint starts no request span of its own today, so a triggered run usually has no link) | `run_id`, `network_ids`, `status`, `error_type` |
 
 Every scheduler tick is its own trace (never one trace spanning the crawler's lifetime). A failed operation's span has status `Error` and the error recorded on it.
 
@@ -97,6 +97,8 @@ Every scheduler tick is its own trace (never one trace spanning the crawler's li
 | `park_sweep` | `success`, `error` | `sweep_failed`, `canceled`, `timeout` |
 
 `queue_claim` covers one `SyncNext` call: claiming the next queued item *and* syncing it. A `partial_failure` poll tick is the signal for a broken network hiding behind healthy ones — e.g. `sum by (error_type) (rate(onix_plugin_errors_total{plugin_id="catalogcrawler", operation="poll_tick"}[15m]))`. Note that the shared histogram's largest bucket is 1 s, so long poll ticks / syncs all land in `+Inf`; use `_sum / _count` for their mean duration.
+
+What `poll_tick` does *not* see: once discovery has returned, catalog-core's `PollIndexes` logs a failure to fetch or process an individual index (`crawlmanager: polling index failed`) and carries on, without reporting it to its caller — so a tick whose discovery fully succeeded is `success` even if some discovered indexes could not be fetched. Those failures are only in the logs (and, for catalogs already queued, in `queue_claim` errors). Also note a failed registry network is counted twice — once as a `registry_lookup` error and once in its tick's `partial_failure` — so filter `onix_plugin_errors_total` by `operation` rather than summing across operations.
 
 ## On-demand crawl
 

@@ -386,9 +386,9 @@ The `catalogcrawler` plugin runs in the background, outside any request, so each
 [catalogcrawler.poll_tick]                 every indexIntervalSeconds
   └── [catalogcrawler.registry_lookup]     one per configured network (attr network_id)
 [catalogcrawler.sync_tick]                 every catalogIntervalSeconds
-  └── [catalogcrawler.queue_claim]         one per claimed queue item, plus the final empty claim
+  └── [catalogcrawler.queue_claim]         one per claimed queue item, plus the claim that ends the drain
 [catalogcrawler.park_sweep]                every parkSweepIntervalSeconds
-[catalogcrawler.on_demand_crawl]           per POST /crawl/trigger run; linked to the request span
+[catalogcrawler.on_demand_crawl]           per POST /crawl/trigger run; linked to the caller's span, if any
   └── [catalogcrawler.registry_lookup]
 ```
 

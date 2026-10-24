@@ -35,7 +35,9 @@ const (
 
 // setupTelemetry installs a span recorder and a manual metric reader as the
 // global otel providers for the duration of the test, restoring the
-// previous ones afterwards.
+// previous ones afterwards. The providers are process-global, so a test using
+// this must not call t.Parallel, and must stop any Scheduler it starts before
+// returning (a still-running tick would record into the next test's providers).
 func setupTelemetry(t *testing.T) (*tracetest.SpanRecorder, *sdkmetric.ManualReader) {
 	t.Helper()
 	prevTP, prevMP := otel.GetTracerProvider(), otel.GetMeterProvider()
